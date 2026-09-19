@@ -172,6 +172,14 @@ def rewrite_hls(text, base, map_url):
     return '\n'.join(lines) + '\n'
 
 
+def read_remote(response, size):
+    try:
+        return response.read(size)
+    except (OSError, http.client.IncompleteRead):
+        # Upstream failure must not be confused with a cancelled local consumer.
+        raise ValueError('The media download was interrupted. Send the video again.') from None
+
+
 class BrokerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self): self.serve('HEAD')
@@ -183,21 +191,29 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             source = self.server.sources.get(self.path)
             if not source:
                 self.send_error(404); return
-            connection, response, final_url = fetch_public(source, method, self.headers.get('Range'), self.server.referer)
+            try:
+                connection, response, final_url = fetch_public(source, method, self.headers.get('Range'), self.server.referer)
+            except OSError:
+                raise ValueError('The media connection was interrupted. Send the video again.') from None
             if response.status not in (200, 206):
                 self.server.last_error = f'The media server refused this request (HTTP {response.status}). Refresh the video page and send it again.'
                 self.send_error(502, 'Media server did not provide the requested content'); return
             content_type = response.getheader('Content-Type', '').split(';')[0].lower()
             # GET prefix inspection prevents HTML/DASH from being fed to a demuxer.
-            prefix = response.read(4096) if method == 'GET' else b''
+            prefix = read_remote(response, 4096) if method == 'GET' else b''
             stripped = prefix.lstrip(b'\xef\xbb\xbf\r\n\t ')
             hls = stripped.startswith(b'#EXTM3U') or content_type in {'application/vnd.apple.mpegurl', 'application/x-mpegurl', 'audio/mpegurl'}
             if content_type in {'application/dash+xml', 'text/html'} or stripped.startswith((b'<', b'<!')):
                 raise ValueError('This media response is not a supported video stream.')
+            expected = response.getheader('Content-Length')
+            expected = int(expected) if expected and expected.isdecimal() else None
+            received = len(prefix)
             body = None
             if hls and method == 'GET':
-                body = prefix + response.read(MAX_MANIFEST + 1)
+                body = prefix + read_remote(response, MAX_MANIFEST + 1)
                 if len(body) > MAX_MANIFEST: raise ValueError('HLS playlist is too large.')
+                if expected is not None and len(body) != expected:
+                    raise ValueError('The media playlist download was incomplete. Send the video again.')
                 body = rewrite_hls(body.decode('utf-8-sig'), final_url, self.server.map_url).encode('utf-8')
             self.send_response(response.status)
             self.send_header('Content-Type', 'application/vnd.apple.mpegurl' if hls else content_type or 'application/octet-stream')
@@ -214,9 +230,12 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     self.wfile.write(prefix)
                     while not self.server.stopping.is_set():
-                        chunk = response.read(128 * 1024)
+                        chunk = read_remote(response, 128 * 1024)
                         if not chunk: break
+                        received += len(chunk)
                         self.wfile.write(chunk)
+                    if not self.server.stopping.is_set() and expected is not None and received != expected:
+                        raise ValueError('The media download was incomplete. Send the video again.')
         except (BrokenPipeError, ConnectionResetError): pass
         except Exception as error:
             self.server.last_error = str(error) if isinstance(error, ValueError) else 'The media server connection failed. Refresh the video page and send it again.'

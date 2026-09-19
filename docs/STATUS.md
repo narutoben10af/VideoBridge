@@ -56,3 +56,15 @@ Record exact receiver metadata and perform longer background/soak testing; then 
 - Browser selection now opens in a full tab to accommodate subtitle choices; recognizable filename language codes produce readable labels and are explicitly marked inferred.
 - Native seek controls use actual AVPlayer seekable ranges; browser-position resume is explicit and range-gated.
 - The bounded actual-episode test was stopped through the app; the helper reported prepared media removed. Source media and browsing tokens are not committed.
+
+## Receiver acceptance and stability follow-up
+
+- The user subsequently confirmed actual Anikoto video, English soft captions and continued playback while using another Mac app. Chrome handoff was also explicitly confirmed successful. This supersedes the earlier unconfirmed receiver/access-grant notes; it does not establish long-session stability or Safari support.
+- The user reports intermittent video hesitation and audio drifting both ahead of and behind video. Rewinding temporarily restores sync. A constant subtitle/audio offset is therefore not an established remedy.
+- The affected cache completed preparation: 310 HLS segments, ENDLIST, approximately 1,420 seconds. Complete preparation on the Mac does not establish a fully buffered receiver.
+- Read-only fragment inspection found repeated approximately four-second stretched samples and differences between manifest segment durations and fragment sample durations. Source-versus-preparation attribution and a synthetic reproducer remain under investigation; no receiver stability fix is claimed.
+- Next change includes visible ten-second seek controls, matching keyboard/menu-bar controls, and persistent preparation status. Physical pause/resume/seek and longer playback validation remain required.
+
+- Added shared range-safe ten-second skip controls to the main window and compact menu-bar panel. Bare Left/Right Arrow use ten seconds in the player window; text editing and modified shortcuts remain available. The persistent preparation label is driven by the helper completion event, not seek messages.
+- A local synthetic three-segment test proved that the installed FFmpeg can skip a missing middle segment and exit successfully. Preparation now treats FFmpeg processing errors and broker download failures as errors; truncated responses and upstream resets are detected. Five new regressions cover healthy completion, missing/truncated segments, safe error messages and cleanup. This prevents false successful preparation for these cases; it does not establish the cause or repair of the already-prepared episode.
+- Timestamp-jump investigation also reproduced stretched fMP4 samples from synthetic discontinuous input. Blind timestamp normalization is deferred because missing footage versus timestamp-only gaps must be distinguished and subtitle/seek timelines kept aligned.

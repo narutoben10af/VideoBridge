@@ -171,7 +171,7 @@ def prepare(request, root, stopping, parent_pid):
         if stopping.is_set(): raise InterruptedError()
         emit('status', message=f'Preparing selectable subtitles {i+1}/{len(tracks)}…')
         try:
-            result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', *track['input'], '-map', track['map'],
+            result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', '-xerror', *track['input'], '-map', track['map'],
                 '-c:s', 'webvtt', '-y', str(root / f'sub{i}.vtt')], stopping, parent_pid, timeout=90, capture_output=False)
         except subprocess.TimeoutExpired:
             raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
@@ -179,7 +179,7 @@ def prepare(request, root, stopping, parent_pid):
         (root / f'sub{i}.m3u8').write_text(subtitle_playlist(duration, f'sub{i}.vtt'))
     (root / 'master.m3u8').write_text(master_playlist(tracks))
     video_args = ['-c:v', 'copy']
-    cmd = [ffmpeg, '-nostdin', '-v', 'error', *source_args(source, referer), '-map', f'0:{video["index"]}',
+    cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', *source_args(source, referer), '-map', f'0:{video["index"]}',
            '-map', '0:a:0?', *video_args, '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-sn',
            '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'fmp4',
            '-hls_flags', 'temp_file', '-hls_fmp4_init_filename', 'init.mp4',
@@ -210,24 +210,29 @@ def run(request):
             except ValueError:
                 if broker and broker.last_error: raise ValueError(broker.last_error)
                 raise
+            if broker and broker.last_error: raise ValueError(broker.last_error)
             ready = False; started = time.monotonic(); complete = False
             while not stopping.wait(0.5):
                 if os.getppid() != parent: break
+                if broker and broker.last_error: raise ValueError(broker.last_error)
                 size = sum(p.stat().st_size for p in root.iterdir() if p.is_file())
                 if size > MAX_SESSION or shutil.disk_usage(root).free <= EARLY_FLOOR:
                     raise ValueError('Preparation stopped at the storage safety boundary.')
                 code = process.poll()
+                if broker and broker.last_error: raise ValueError(broker.last_error)
                 if code not in (None, 0): raise ValueError('Video preparation failed. The stream may have expired or use an unsupported codec.')
                 if not ready and (root / 'video.m3u8').exists():
                     host = request.get('address') or lan_address()
                     socket.inet_aton(host)
                     server = MediaServer(root, secrets.token_urlsafe(24), host)
                     threading.Thread(target=server.serve_forever, daemon=True).start()
+                    if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('ready', url=f'http://{host}:{server.server_port}/{server.token}/master.m3u8', duration=duration,
                          subtitles=[dict(label=t['name'], language=t['language']) for t in tracks])
                     ready = True
                 if code == 0 and not complete:
                     if not ready: raise ValueError('No playable media was generated.')
+                    if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('complete', message='Video is fully prepared; seeking is available throughout.')
                     complete = True
                 if not ready and time.monotonic()-started > 120: raise ValueError('No playable segment after two minutes.')

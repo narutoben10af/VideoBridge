@@ -11,7 +11,7 @@ APP="$STAGE/VideoBridge.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ROOT/work/swift-cache"
 xcrun swiftc -swift-version 5 -parse-as-library -O -target arm64-apple-macosx13.0 \
   -module-cache-path "$ROOT/work/swift-cache" \
-  "$ROOT/app/VideoBridge.swift" -o "$APP/Contents/MacOS/VideoBridge" \
+  "$ROOT/app/VideoBridge.swift" "$ROOT/app/MenuBarControls.swift" -o "$APP/Contents/MacOS/VideoBridge" \
   -framework SwiftUI -framework AppKit -framework AVKit -framework AVFoundation
 cp "$ROOT/app/relay.py" "$APP/Contents/Resources/relay.py"
 cp "$ROOT/app/process_worker.py" "$ROOT/app/remote_media.py" "$APP/Contents/Resources/"

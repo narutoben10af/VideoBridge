@@ -89,6 +89,20 @@ enum TimelinePolicy {
     static func canSeek(_ seconds: Double, in ranges: [Range<Double>]) -> Bool {
         seconds.isFinite && seconds >= 0 && ranges.contains(where: { $0.contains(seconds) })
     }
+    static func arrowSkip(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, editingText: Bool) -> Double? {
+        guard !editingText, modifiers.intersection([.command, .option, .control, .shift]).isEmpty else { return nil }
+        if keyCode == 123 { return -10 }
+        if keyCode == 124 { return 10 }
+        return nil
+    }
+    static func skipTarget(from current: Double, by offset: Double, in ranges: [Range<Double>]) -> Double? {
+        guard current.isFinite, offset.isFinite, offset != 0,
+              let beginning = ranges.map(\.lowerBound).min() else { return nil }
+        let proposed = current + offset
+        let target = offset < 0 ? max(beginning, proposed) : proposed
+        guard target != current, canSeek(target, in: ranges) else { return nil }
+        return target
+    }
     static func clock(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds >= 0, seconds < Double(Int.max) else { return "–:––" }
         let whole = Int(seconds)
@@ -108,6 +122,7 @@ enum TimelinePolicy {
     @Published var address = ""
     @Published var preparing = false
     @Published var ready = false
+    @Published private(set) var fullyPrepared = false
     @Published var stopping = false
     @Published var external = false
     @Published var playing = false
@@ -124,6 +139,8 @@ enum TimelinePolicy {
     @Published private(set) var startTime: Double = 0
     private var helper: Process?
     private var generation = UUID()
+    private var seekRequest = UUID()
+    private var pendingSeekTarget: Double?
     private var routeObserver: NSKeyValueObservation?
     private var playbackObserver: NSKeyValueObservation?
     private var timeObserver: Any?
@@ -162,6 +179,18 @@ enum TimelinePolicy {
             return max(0, start)..<end
         }
     }
+    func canSkip(by offset: Double) -> Bool {
+        ready && !stopping && TimelinePolicy.skipTarget(from: pendingSeekTarget ?? currentSeconds, by: offset, in: seekableRanges) != nil
+    }
+    func skip(by offset: Double) {
+        refreshTimeline()
+        guard ready, !stopping,
+              let target = TimelinePolicy.skipTarget(from: pendingSeekTarget ?? currentSeconds, by: offset, in: seekableRanges) else {
+            message = "That skip is outside the available video. Wait for more preparation or choose a seekable position."
+            return
+        }
+        seek(to: target)
+    }
     func seek(to seconds: Double) {
         refreshTimeline()
         guard ready, TimelinePolicy.canSeek(seconds, in: seekableRanges) else {
@@ -169,10 +198,12 @@ enum TimelinePolicy {
             return
         }
         let id = generation
+        let request = UUID(); seekRequest = request; pendingSeekTarget = seconds
         message = "Seeking to \(TimelinePolicy.clock(seconds))…"
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor in
-                guard let self, self.generation == id else { return }
+                guard let self, self.generation == id, self.seekRequest == request else { return }
+                self.pendingSeekTarget = nil
                 self.refreshTimeline()
                 self.message = finished ? "Position: \(TimelinePolicy.clock(self.currentSeconds))." : "Seek did not complete. Try again when the video is ready."
             }
@@ -180,7 +211,7 @@ enum TimelinePolicy {
     }
     func resumeBrowserPosition() { seek(to: startTime) }
     func stop() {
-        generation = UUID()
+        generation = UUID(); seekRequest = UUID(); pendingSeekTarget = nil; fullyPrepared = false
         if let active = helper, active.isRunning {
             retiringHelpers.append(active)
             stopping = true
@@ -332,7 +363,9 @@ enum TimelinePolicy {
         case "error":
             player.pause(); ready = false; preparing = false
             message = "Error: " + (event["message"] as? String ?? "Preparation failed.")
-        case "complete": message = event["message"] as? String ?? "Prepared."
+        case "complete":
+            fullyPrepared = true
+            message = event["message"] as? String ?? "Prepared."
         case "ready":
             guard let raw = event["url"] as? String, let url = URL(string: raw) else { return }
             if let duration = event["duration"] as? Double, duration.isFinite, duration > 0 {
@@ -394,12 +427,38 @@ enum TimelinePolicy {
 }
 
 struct NativeVideo: NSViewRepresentable {
-    let player: AVPlayer
+    let model: Playback
+    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
     func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView(); view.player = player; view.controlsStyle = .floating
+        let view = AVPlayerView(); view.player = model.player; view.controlsStyle = .floating
+        context.coordinator.view = view
         return view
     }
-    func updateNSView(_ view: AVPlayerView, context: Context) { view.player = player }
+    func updateNSView(_ view: AVPlayerView, context: Context) { view.player = model.player }
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: Coordinator) { coordinator.removeMonitor() }
+
+    /// Override AVPlayerView's built-in arrow behavior only for this window's bare arrows.
+    final class Coordinator {
+        weak var view: AVPlayerView?
+        private var monitor: Any?
+        init(model: Playback) {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak model] event in
+                guard let model, let window = self?.view?.window, event.window === window,
+                      let offset = TimelinePolicy.arrowSkip(keyCode: event.keyCode, modifiers: event.modifierFlags,
+                          editingText: window.firstResponder is NSTextView || window.firstResponder is NSTextField) else { return event }
+                let consumed = MainActor.assumeIsolated {
+                    guard model.ready && !model.stopping else { return false }
+                    model.skip(by: offset)
+                    return true
+                }
+                return consumed ? nil : event
+            }
+        }
+        func removeMonitor() {
+            if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+        }
+        deinit { removeMonitor() }
+    }
 }
 struct RoutePicker: NSViewRepresentable {
     let player: AVPlayer
@@ -460,7 +519,7 @@ struct ContentView: View {
                 Text("8-bit H.264 SDR video. Audio becomes stereo AAC. ASS subtitle styling is simplified.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            NativeVideo(player: model.player).frame(minHeight: 240).background(.black)
+            NativeVideo(model: model).frame(minHeight: 240).background(.black)
             if model.ready {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -479,6 +538,11 @@ struct ContentView: View {
                         Text(TimelinePolicy.clock(model.durationSeconds)).monospacedDigit()
                     }
                     HStack {
+                        Label(model.fullyPrepared ? "Fully prepared" : "Preparing remaining video…", systemImage: model.fullyPrepared ? "checkmark.circle" : "arrow.down.circle")
+                            .font(.caption).foregroundStyle(model.fullyPrepared ? .green : .secondary)
+                        Spacer()
+                    }
+                    HStack {
                         Text(model.seekableRanges.isEmpty ? "Waiting for seekable video…" :
                             "Seekable: " + model.seekableRanges.map { TimelinePolicy.clock($0.lowerBound) + "–" + TimelinePolicy.clock($0.upperBound) }.joined(separator: ", "))
                             .font(.caption).foregroundStyle(.secondary)
@@ -493,9 +557,17 @@ struct ContentView: View {
             }
             HStack(spacing: 12) {
                 if model.ready {
+                    Button { model.skip(by: -10) } label: { Label("10s", systemImage: "gobackward.10") }
+                        .disabled(!model.canSkip(by: -10))
+                        .accessibilityLabel("Back 10 seconds")
+                        .help("Back 10 seconds (Left Arrow).")
                     Button(model.playing || model.buffering ? "Pause" : "Play") {
                         if model.playing || model.buffering { model.player.pause() } else { model.player.play() }
                     }.buttonStyle(.borderedProminent).controlSize(.large)
+                    Button { model.skip(by: 10) } label: { Label("10s", systemImage: "goforward.10") }
+                        .disabled(!model.canSkip(by: 10))
+                        .accessibilityLabel("Forward 10 seconds")
+                        .help("Forward 10 seconds (Right Arrow).")
                 } else {
                     Button("Prepare for TV", action: model.prepare)
                         .buttonStyle(.borderedProminent).controlSize(.large)
@@ -555,10 +627,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
+struct MenuBarEntry: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        MenuBarControls(model: Playback.shared) {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+}
 @main struct VideoBridgeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
     var body: some Scene {
-        WindowGroup { ContentView() }
+        Window("VideoBridge", id: "main") { ContentView() }
         .commands {
             CommandGroup(after: .newItem) {
                 Button("Open video…") { Playback.shared.chooseVideo() }.keyboardShortcut("o")
@@ -566,5 +647,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 Button("Load subtitle test clip") { Playback.shared.loadSubtitleTest() }
             }
         }
+        MenuBarExtra("VideoBridge", systemImage: "play.tv") {
+            MenuBarEntry()
+        }.menuBarExtraStyle(.window)
     }
 }
