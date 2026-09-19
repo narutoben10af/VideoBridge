@@ -6,11 +6,12 @@ struct MenuBarControls: View {
     @ObservedObject var model: Playback
     let openMainWindow: () -> Void
 
-    private var canControl: Bool { model.ready && !model.stopping }
-    private var canStop: Bool { (model.ready || model.preparing) && !model.stopping }
+    private var canControl: Bool { model.ready && !model.stopping && !model.reloading }
+    private var canStop: Bool { (model.ready || model.preparing || model.reloading) && !model.stopping }
     private var pauseAvailable: Bool { model.playing || model.buffering }
     private var status: String {
         if model.stopping { return "Stopping…" }
+        if model.reloading { return "Restoring prepared video…" }
         if model.preparing { return "Preparing video…" }
         if model.buffering { return "Buffering…" }
         if model.playing { return "Playing" }
@@ -30,7 +31,7 @@ struct MenuBarControls: View {
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if model.preparing || model.buffering || model.stopping {
+                if model.preparing || model.buffering || model.stopping || model.reloading {
                     ProgressView().controlSize(.small).accessibilityLabel(status)
                 }
             }
@@ -88,6 +89,14 @@ struct MenuBarControls: View {
                 }
             }.pickerStyle(.menu).disabled(!canControl || model.choices.isEmpty)
                 .accessibilityLabel("Subtitle language")
+
+            if model.message.hasPrefix("Error:") {
+                Text(model.message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open playback details", action: openMainWindow)
+            }
 
             if model.incoming != nil {
                 Label("New browser video waiting", systemImage: "tray.and.arrow.down")

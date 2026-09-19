@@ -7,8 +7,8 @@
     "AGENTS.md": "f112bf8631ebdeb3e3a231537521c5773e9ad9de510747e3bbc17251a8cbb0a2",
     "CONTRIBUTING.md": "845c3216dae6142a41c94a903dc1524a18af0ae78cf43a14839030488e1da9db",
     "README.md": "1a44522e1b54d80a0a0d61f275fe47a37f532239e6e0a5cfc9199e906fa379d0",
-    "app/MenuBarControls.swift": "6ffdcf2691ede09a7d4cff5d158ec85ee38a3d5c03d9b3129bcebf82313aa142",
-    "app/VideoBridge.swift": "265696eea8b9a634e82753eb857a989ceef0780bd2e2662b98a76bfefdfff9ca",
+    "app/MenuBarControls.swift": "526cf58be9a5523d0be0ef051dee6b6ce0b019ba05862fc9842b0dc21e5cf53a",
+    "app/VideoBridge.swift": "4223e1e085e016d589dcce0564b0aaddf0fbaed066546b243c4a7c3e53a6c58a",
     "app/bridge_protocol.py": "66f65e63b74c5c5a4b6de81b09149dbc266f193797649caa5f31c644a519d97d",
     "app/process_worker.py": "f51c03d80dc62632356db300c4ac62476728025c8ac03a78170a0cefb2858686",
     "app/relay.py": "b1cae0e2b3147597fc23867cb2bab851b1ac48e1a97452e1b45e09cfcac3ecf8",
@@ -18,7 +18,7 @@
     "docs/PROTOCOL.md": "670efe1df898e5431496ccb1b564a723c1fa34258037fd53d7f2fb9ccae28ca5",
     "docs/QUALITY.md": "0a7fe3ddf9c3decb75c5f714b6bf3e7ee36f56597c78faf6798b58b32a2ea283",
     "docs/ROADMAP.md": "ef64eff7630cf520b280265493dbc15bb1c9a24f68d9aadec1a2d3ebb6ecd00a",
-    "docs/STATUS.md": "aba0be00e7cab19a7a6aebcc008095571544e060b2b729849434414077b8e8f2",
+    "docs/STATUS.md": "172b824d5a5e14386b17444a3c6c69c61f18852f6898553696f3f15715944cd1",
     "evidence/validation.txt": "69610ecc1e9ada65a77326f60d54fea6fee1cf315bede87e9c517eb1e93c2fa7",
     "extensions/build.py": "6578dfbd8f3499b99377749f7e91525a84ebc24bffc6c7fc8958e744e118a3f4",
     "extensions/chrome/manifest.json": "c867083ad3de1e35f536c88ef94df90ae11a7416061fd939ef198c1a1154a5e4",
@@ -39,7 +39,7 @@
     "scripts/make_m0_fixture.py": "9b53d32c84039ed93413a46cbbe07aa20e835869223bb9a247b6677e49f04c6a",
     "scripts/test_native_inbox.py": "ecbfbe047e2187641bffe4a44bb2ff3f8c2dbcab1c7c4a3db1681d396a9903bb",
     "tests/browser/discovery.test.cjs": "e6dbfe1747a4bb08e05501c330242452748fc95d5a58c8e42ae096f435f0fbaa",
-    "tests/native/InboxTests.swift": "35449464b556de492db249714c8ac912482113fca3379c0a3a30298cc5f754d5",
+    "tests/native/InboxTests.swift": "bff1cc3faa2bfd837358a56d86b5dcfac508d6398fad68d8e0caec148cefa14b",
     "tests/test_bridge_protocol.py": "46f87ef3dac202a46e3202cab7b3d26206cbe8ea1a00bc2efad34a7b036b9f8e",
     "tests/test_native_host.py": "5813aefb897c70f7005101b486693fcaa109090613991f3a7c67e2cff2030a44",
     "tests/test_preparation_integrity.py": "9a83d6cd3225779b10b989e3824b75db8754e1e80fde7ff61d44e258910dfbfe",
@@ -98,16 +98,25 @@
       "reviewer_id": "/root/lifecycle_review",
       "reviewed_at_utc": "2026-09-19T07:55:34.432311+00:00",
       "covered_paths": [
-        "app/MenuBarControls.swift",
-        "app/VideoBridge.swift",
         "app/relay.py",
         "app/remote_media.py",
-        "docs/STATUS.md",
         "scripts/build.sh",
-        "tests/native/InboxTests.swift",
         "tests/test_preparation_integrity.py"
       ],
       "summary": "Reviewed frozen snapshot 1f6aa52313508bb16ab6d19d26d5dc80777bb1faeebe34dfbaa184b86cbc0743. No blocking defects in bounded seek/menu controls and false-prepared detection. Independently exercised native checks and broker failure boundary. Upstream broken-pipe classification and event-boundary findings resolved. Live UI and Apple TV validation pending; draft only, no AV-sync cure or merge approval.",
+      "findings": [],
+      "disposition": "approved"
+    },
+    {
+      "reviewer_id": "/root/lifecycle_review",
+      "reviewed_at_utc": "2026-09-19T17:08:37.695577+00:00",
+      "covered_paths": [
+        "app/MenuBarControls.swift",
+        "app/VideoBridge.swift",
+        "docs/STATUS.md",
+        "tests/native/InboxTests.swift"
+      ],
+      "summary": "Reviewed snapshot 939ba5b5c6ff6fcee99eb1cf7f5c29f5bc04dede3d1e7b75e74439f0a01cfb44. Retry position retention, late subtitle callbacks and competing control findings resolved. Local native recovery evidence is distinguished from pending menu/lifecycle/physical receiver validation. Approved updated draft only, not merge or general AV sync fix.",
       "findings": [],
       "disposition": "approved"
     }

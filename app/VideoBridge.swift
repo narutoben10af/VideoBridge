@@ -111,6 +111,27 @@ enum TimelinePolicy {
     }
 }
 
+struct RecoverySnapshot {
+    let position: Double
+    let subtitle: Any?
+    let subtitlesOff: Bool
+    let wasPlaying: Bool
+}
+
+/// A failed replacement must not become the source of a subsequent retry's saved position.
+struct RecoveryRetryState {
+    private(set) var saved: RecoverySnapshot?
+    mutating func begin(current: RecoverySnapshot) -> RecoverySnapshot {
+        if saved == nil { saved = current }
+        return saved!
+    }
+    mutating func updateSubtitle(_ property: Any?, off: Bool) {
+        guard let old = saved else { return }
+        saved = RecoverySnapshot(position: old.position, subtitle: property, subtitlesOff: off, wasPlaying: old.wasPlaying)
+    }
+    mutating func reset() { saved = nil }
+}
+
 @MainActor final class Playback: ObservableObject {
     static let shared = Playback()
     let player = AVPlayer()
@@ -124,6 +145,8 @@ enum TimelinePolicy {
     @Published var ready = false
     @Published private(set) var fullyPrepared = false
     @Published var stopping = false
+    @Published private(set) var reloading = false
+    @Published private(set) var diagnosticEvents: [String] = []
     @Published var external = false
     @Published var playing = false
     @Published var buffering = false
@@ -148,6 +171,18 @@ enum TimelinePolicy {
     private var seekableObserver: NSKeyValueObservation?
     private var pendingEvents = Data()
     private var expectedSubtitles = 0
+    private var preparedURL: URL?
+    private var recoveryTask: Task<Void, Never>?
+    private var subtitleLoadFinished = false
+    private struct Recovery {
+        let position: Double
+        let subtitle: Any?
+        let subtitlesOff: Bool
+        let wasPlaying: Bool
+        var seekStarted = false
+    }
+    private var recovery: Recovery?
+    private var recoveryRetry = RecoveryRetryState()
     private var retiringHelpers: [Process] = []
 
     init() {
@@ -162,29 +197,53 @@ enum TimelinePolicy {
         }
         routeObserver = player.observe(\.isExternalPlaybackActive, options: [.initial, .new]) { [weak self] player, _ in
             let active = player.isExternalPlaybackActive
-            Task { @MainActor in self?.external = active }
+            Task { @MainActor in
+                self?.external = active
+                self?.captureDiagnostic("route_changed")
+            }
         }
     }
     var canResumeBrowserPosition: Bool {
-        ready && startTime > 0 && TimelinePolicy.canSeek(startTime, in: seekableRanges)
+        ready && !reloading && startTime > 0 && TimelinePolicy.canSeek(startTime, in: seekableRanges)
     }
     private func refreshTimeline() {
         guard let item = player.currentItem else { return }
         let now = player.currentTime().seconds
         if now.isFinite { currentSeconds = max(0, now) }
-        seekableRanges = item.seekableTimeRanges.compactMap {
-            let range = $0.timeRangeValue
+        let updated = item.seekableTimeRanges.compactMap { value -> Range<Double>? in
+            let range = value.timeRangeValue
             let start = range.start.seconds, end = CMTimeRangeGetEnd(range).seconds
             guard start.isFinite, end.isFinite, end > max(0, start) else { return nil }
             return max(0, start)..<end
         }
+        if updated != seekableRanges {
+            seekableRanges = updated
+            captureDiagnostic("ranges_changed")
+        }
+    }
+    private func captureDiagnostic(_ event: String) {
+        let item = player.currentItem
+        func ranges(_ values: [NSValue]) -> String {
+            values.prefix(4).map {
+                let r = $0.timeRangeValue
+                return TimelinePolicy.clock(r.start.seconds) + "-" + TimelinePolicy.clock(CMTimeRangeGetEnd(r).seconds)
+            }.joined(separator: ",")
+        }
+        let error = item?.error as NSError?
+        let knownDomains = [NSURLErrorDomain, AVFoundationErrorDomain, NSOSStatusErrorDomain]
+        let domain = error.map { knownDomains.contains($0.domain) ? $0.domain : "other" } ?? "none"
+        let waiting = player.reasonForWaitingToPlay?.rawValue ?? "none"
+        let safeWaiting = waiting.range(of: "^[A-Za-z]{1,80}$", options: .regularExpression) != nil ? waiting : "other"
+        let entry = "t=\(Int(ProcessInfo.processInfo.systemUptime)) \(event) item=\(item?.status.rawValue ?? -1) control=\(player.timeControlStatus.rawValue) external=\(external) position=\(TimelinePolicy.clock(player.currentTime().seconds)) seek=[\(ranges(item?.seekableTimeRanges ?? []))] loaded=[\(ranges(item?.loadedTimeRanges ?? []))] waiting=\(safeWaiting) error=\(domain):\(error?.code ?? 0) mediaError=\(item?.errorLog()?.events.last?.errorStatusCode ?? 0)"
+        diagnosticEvents.append(entry)
+        if diagnosticEvents.count > 32 { diagnosticEvents.removeFirst(diagnosticEvents.count - 32) }
     }
     func canSkip(by offset: Double) -> Bool {
-        ready && !stopping && TimelinePolicy.skipTarget(from: pendingSeekTarget ?? currentSeconds, by: offset, in: seekableRanges) != nil
+        ready && !stopping && !reloading && TimelinePolicy.skipTarget(from: pendingSeekTarget ?? currentSeconds, by: offset, in: seekableRanges) != nil
     }
     func skip(by offset: Double) {
         refreshTimeline()
-        guard ready, !stopping,
+        guard ready, !stopping, !reloading,
               let target = TimelinePolicy.skipTarget(from: pendingSeekTarget ?? currentSeconds, by: offset, in: seekableRanges) else {
             message = "That skip is outside the available video. Wait for more preparation or choose a seekable position."
             return
@@ -193,25 +252,101 @@ enum TimelinePolicy {
     }
     func seek(to seconds: Double) {
         refreshTimeline()
-        guard ready, TimelinePolicy.canSeek(seconds, in: seekableRanges) else {
+        guard ready, !reloading, TimelinePolicy.canSeek(seconds, in: seekableRanges) else {
             message = "That position is not available yet. Wait for more video to prepare, then try again."
             return
         }
+        recoveryRetry.reset()
         let id = generation
         let request = UUID(); seekRequest = request; pendingSeekTarget = seconds
         message = "Seeking to \(TimelinePolicy.clock(seconds))…"
+        captureDiagnostic("seek_requested")
         player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor in
                 guard let self, self.generation == id, self.seekRequest == request else { return }
                 self.pendingSeekTarget = nil
                 self.refreshTimeline()
+                self.captureDiagnostic(finished ? "seek_finished" : "seek_failed")
                 self.message = finished ? "Position: \(TimelinePolicy.clock(self.currentSeconds))." : "Seek did not complete. Try again when the video is ready."
+            }
+        }
+    }
+    var canReloadPreparedVideo: Bool {
+        fullyPrepared && preparedURL != nil && helper?.isRunning == true && !stopping && !reloading
+    }
+    func reloadPreparedVideo() {
+        guard canReloadPreparedVideo, let url = preparedURL, let item = player.currentItem else { return }
+        refreshTimeline()
+        let option = group.flatMap { item.currentMediaSelection.selectedMediaOption(in: $0) }
+        let saved = recoveryRetry.begin(current: RecoverySnapshot(position: currentSeconds, subtitle: option?.propertyList(), subtitlesOff: option == nil,
+                                                                   wasPlaying: player.timeControlStatus != .paused))
+        recovery = Recovery(position: saved.position, subtitle: saved.subtitle, subtitlesOff: saved.subtitlesOff, wasPlaying: saved.wasPlaying)
+        seekRequest = UUID(); pendingSeekTarget = nil
+        item.cancelPendingSeeks(); player.pause()
+        reloading = true; ready = false; seekableRanges = []
+        captureDiagnostic("reload_requested")
+        message = "Reloading prepared video. Restoring position and subtitles before resuming…"
+        let id = generation
+        installPreparedItem(url, id: id)
+        let replacement = player.currentItem
+        recoveryTask?.cancel()
+        recoveryTask = Task { @MainActor [weak self] in
+            for _ in 0..<80 {
+                guard let self, !Task.isCancelled, self.generation == id, self.reloading,
+                      self.player.currentItem === replacement else { return }
+                self.refreshTimeline()
+                self.attemptRecovery(id: id)
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
+            }
+            guard let self, self.generation == id, self.reloading, self.player.currentItem === replacement else { return }
+            self.failRecovery("Reload timed out before the saved position became seekable. Playback is paused; choose an available position or try Reload again.")
+        }
+    }
+    private func failRecovery(_ reason: String) {
+        seekRequest = UUID(); pendingSeekTarget = nil
+        recoveryTask?.cancel(); recoveryTask = nil; recovery = nil; reloading = false
+        player.currentItem?.cancelPendingSeeks(); player.pause()
+        captureDiagnostic("reload_failed")
+        message = "Error: " + reason
+    }
+    private func attemptRecovery(id: UUID) {
+        guard reloading, ready, subtitleLoadFinished, var saved = recovery, !saved.seekStarted,
+              let item = player.currentItem, TimelinePolicy.canSeek(saved.position, in: seekableRanges) else { return }
+        if let group {
+            if saved.subtitlesOff { selectedSubtitle = -1; item.select(nil, in: group) }
+            else if let property = saved.subtitle, let option = group.mediaSelectionOption(withPropertyList: property),
+                    let index = choices.firstIndex(of: option) {
+                selectedSubtitle = index; item.select(option, in: group)
+            } else { failRecovery("The saved subtitle track could not be restored. Playback remains paused; choose a subtitle before playing."); return }
+            let actual = item.currentMediaSelection.selectedMediaOption(in: group)
+            let expected = choices.indices.contains(selectedSubtitle) ? choices[selectedSubtitle] : nil
+            guard actual == expected else { return }
+        } else if !saved.subtitlesOff {
+            failRecovery("The saved subtitle track is unavailable after reload. Playback remains paused."); return
+        }
+        saved.seekStarted = true; recovery = saved
+        let request = UUID(); seekRequest = request
+        player.seek(to: CMTime(seconds: saved.position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak item] finished in
+            Task { @MainActor in
+                guard let self, let item, self.generation == id, self.seekRequest == request,
+                      self.player.currentItem === item, self.reloading else { return }
+                self.refreshTimeline()
+                guard finished, abs(self.currentSeconds - saved.position) <= 0.1 else {
+                    self.failRecovery("Reloaded video could not restore the saved position. Playback remains paused; choose an available position."); return
+                }
+                self.recoveryTask?.cancel(); self.recoveryTask = nil; self.recovery = nil; self.recoveryRetry.reset(); self.reloading = false
+                self.selectSubtitle()
+                if saved.wasPlaying { self.player.play() }
+                self.captureDiagnostic("reload_succeeded")
+                self.message = "Prepared video reloaded at \(TimelinePolicy.clock(self.currentSeconds)). Check the AirPlay route and captions on your TV."
             }
         }
     }
     func resumeBrowserPosition() { seek(to: startTime) }
     func stop() {
         generation = UUID(); seekRequest = UUID(); pendingSeekTarget = nil; fullyPrepared = false
+        recoveryTask?.cancel(); recoveryTask = nil; recovery = nil; recoveryRetry.reset(); reloading = false; preparedURL = nil
+        diagnosticEvents = []
         if let active = helper, active.isRunning {
             retiringHelpers.append(active)
             stopping = true
@@ -301,6 +436,7 @@ enum TimelinePolicy {
         }
     }
     func prepare() {
+        guard !reloading else { message = "Wait for reload to finish, or press Stop to end this session."; return }
         guard !stopping else { message = "Finishing previous session cleanup…"; return }
         let chosen = source.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.webURL(chosen) || (chosen.hasPrefix("/") && FileManager.default.fileExists(atPath: chosen)) else {
@@ -337,7 +473,8 @@ enum TimelinePolicy {
         process.terminationHandler = { [weak self] proc in
             Task { @MainActor in
                 guard let self, self.generation == id else { return }
-                self.preparing = false; self.ready = false; self.helper = nil
+                self.preparing = false; self.ready = false; self.helper = nil; self.preparedURL = nil
+                if self.reloading { self.failRecovery("The media helper stopped during reload. Prepare the video again.") }
                 self.player.pause(); self.player.replaceCurrentItem(with: nil)
                 if !self.message.hasPrefix("Error:") {
                     self.message = "Error: media preparation stopped."
@@ -361,6 +498,7 @@ enum TimelinePolicy {
         case "status": message = event["message"] as? String ?? "Preparing…"
         case "warning": warning = event["message"] as? String ?? ""
         case "error":
+            if reloading { failRecovery("The media helper failed during reload. Prepare the video again.") }
             player.pause(); ready = false; preparing = false
             message = "Error: " + (event["message"] as? String ?? "Preparation failed.")
         case "complete":
@@ -372,51 +510,66 @@ enum TimelinePolicy {
                 durationSeconds = duration
             }
             expectedSubtitles = (event["subtitles"] as? [[String: Any]])?.count ?? 0
-            let item = AVPlayerItem(url: url)
-            itemObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-                Task { @MainActor in
-                    guard let self, self.generation == id else { return }
-                    if item.status == .failed {
-                        self.message = "Error: player could not load the prepared stream. Check the LAN address or VPN."
-                        self.ready = false
-                    } else if item.status == .readyToPlay {
-                        self.ready = true; self.preparing = false
-                        self.refreshTimeline()
-                        self.message = "Ready. Select Apple TV with the AirPlay button, then press Play."
-                        await self.loadSubtitles(item, id: id)
-                        guard self.generation == id else { return }
-                        if self.startTime > 0 {
-                            self.message += " Resume at your browser position when it becomes available below."
-                        }
+            preparedURL = url
+            installPreparedItem(url, id: id)
+        default: break
+        }
+    }
+    private func installPreparedItem(_ url: URL, id: UUID) {
+        itemObserver = nil; seekableObserver = nil
+        subtitleLoadFinished = false; group = nil; choices = []; selectedSubtitle = -1
+        let item = AVPlayerItem(url: url)
+        player.replaceCurrentItem(with: item)
+        itemObserver = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Task { @MainActor in
+                guard let self, self.generation == id, self.player.currentItem === item else { return }
+                if item.status == .failed {
+                    self.captureDiagnostic("item_failed")
+                    if self.reloading { self.failRecovery("Reload could not load the prepared stream. Check the local connection and try again.") }
+                    else { self.message = "Error: player could not load the prepared stream. Check the LAN address or VPN." }
+                    self.ready = false; self.preparing = false
+                } else if item.status == .readyToPlay {
+                    self.ready = true; self.preparing = false
+                    self.refreshTimeline(); self.captureDiagnostic("item_ready")
+                    if !self.reloading && self.recoveryRetry.saved == nil { self.message = "Ready. Select Apple TV with the AirPlay button, then press Play." }
+                    await self.loadSubtitles(item, id: id)
+                    guard self.generation == id, self.player.currentItem === item else { return }
+                    if !self.reloading && self.recoveryRetry.saved == nil && self.startTime > 0 {
+                        self.message += " Resume at your browser position when it becomes available below."
                     }
                 }
             }
-            player.replaceCurrentItem(with: item)
-            seekableObserver = item.observe(\.seekableTimeRanges, options: [.initial, .new]) { [weak self] _, _ in
-                Task { @MainActor in
-                    guard let self, self.generation == id else { return }
-                    self.refreshTimeline()
-                }
+        }
+        seekableObserver = item.observe(\.seekableTimeRanges, options: [.initial, .new]) { [weak self, weak item] _, _ in
+            Task { @MainActor in
+                guard let self, let item, self.generation == id, self.player.currentItem === item else { return }
+                self.refreshTimeline()
             }
-        default: break
         }
     }
     private func loadSubtitles(_ item: AVPlayerItem, id: UUID) async {
         do {
             let loaded = try await item.asset.loadMediaSelectionGroup(for: .legible)
-            guard generation == id else { return }
+            guard generation == id, player.currentItem === item else { return }
             group = loaded; choices = loaded?.options ?? []
             if expectedSubtitles > 0 && choices.count < expectedSubtitles {
                 warning = "Expected \(expectedSubtitles) subtitle tracks, but the player found \(choices.count). Verify before watching."
             }
             subtitleStatus = choices.isEmpty ? "No selectable subtitle tracks found." : "\(choices.count) selectable subtitle track(s). TV display still requires verification."
-            selectedSubtitle = choices.isEmpty ? -1 : 0; selectSubtitle()
-        } catch { if generation == id { subtitleStatus = "Could not verify selectable subtitle tracks." } }
+            subtitleLoadFinished = true
+            if !reloading && recoveryRetry.saved == nil { selectedSubtitle = choices.isEmpty ? -1 : 0; selectSubtitle() }
+        } catch {
+            if generation == id, player.currentItem === item {
+                subtitleStatus = "Could not verify selectable subtitle tracks."
+                if reloading { failRecovery("Subtitle tracks could not be verified after reload. Playback remains paused.") }
+            }
+        }
     }
     func selectSubtitle() {
         guard let item = player.currentItem, let group else { return }
         let requested = choices.indices.contains(selectedSubtitle) ? choices[selectedSubtitle] : nil
         item.select(requested, in: group)
+        if !reloading { recoveryRetry.updateSubtitle(requested?.propertyList(), off: requested == nil) }
         let actual = item.currentMediaSelection.selectedMediaOption(in: group)
         if actual == requested {
             subtitleStatus = "Selected: " + (actual?.displayName ?? "Off") + ". Verify the matching captions on TV."
@@ -434,7 +587,11 @@ struct NativeVideo: NSViewRepresentable {
         context.coordinator.view = view
         return view
     }
-    func updateNSView(_ view: AVPlayerView, context: Context) { view.player = model.player }
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if view.player !== model.player { view.player = model.player }
+        let controls: AVPlayerViewControlsStyle = model.reloading ? .none : .floating
+        if view.controlsStyle != controls { view.controlsStyle = controls }
+    }
     static func dismantleNSView(_ view: AVPlayerView, coordinator: Coordinator) { coordinator.removeMonitor() }
 
     /// Override AVPlayerView's built-in arrow behavior only for this window's bare arrows.
@@ -443,8 +600,12 @@ struct NativeVideo: NSViewRepresentable {
         private var monitor: Any?
         init(model: Playback) {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak model] event in
-                guard let model, let window = self?.view?.window, event.window === window,
-                      let offset = TimelinePolicy.arrowSkip(keyCode: event.keyCode, modifiers: event.modifierFlags,
+                guard let model, let window = self?.view?.window, event.window === window else { return event }
+                let editingText = window.firstResponder is NSTextView || window.firstResponder is NSTextField
+                let suppressPlaybackKey = MainActor.assumeIsolated { model.reloading } && !editingText &&
+                    [UInt16(49), 123, 124].contains(event.keyCode) && event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty
+                if suppressPlaybackKey { return nil }
+                guard let offset = TimelinePolicy.arrowSkip(keyCode: event.keyCode, modifiers: event.modifierFlags,
                           editingText: window.firstResponder is NSTextView || window.firstResponder is NSTextField) else { return event }
                 let consumed = MainActor.assumeIsolated {
                     guard model.ready && !model.stopping else { return false }
@@ -467,15 +628,18 @@ struct RoutePicker: NSViewRepresentable {
         view.setAccessibilityLabel("Choose Apple TV or another AirPlay receiver")
         return view
     }
-    func updateNSView(_ view: AVRoutePickerView, context: Context) { view.player = player }
+    func updateNSView(_ view: AVRoutePickerView, context: Context) {
+        if view.player !== player { view.player = player }
+    }
 }
 struct ContentView: View {
     @StateObject private var model = Playback.shared
     @State private var scrubbing = false
     @State private var scrubSeconds: Double = 0
-    private var busy: Bool { model.preparing || model.ready || model.stopping }
+    private var busy: Bool { model.preparing || model.ready || model.stopping || model.reloading }
     private var stateLabel: String {
         if model.stopping { return "Stopping…" }
+        if model.reloading { return "Restoring prepared video…" }
         if model.preparing { return "Preparing video…" }
         if model.buffering { return "Buffering…" }
         if model.playing { return model.external ? "Playing on AirPlay" : "Playing · AirPlay not confirmed" }
@@ -533,7 +697,7 @@ struct ContentView: View {
                             } else {
                                 scrubbing = false; model.seek(to: scrubSeconds)
                             }
-                        }).disabled(model.seekableRanges.isEmpty)
+                        }).disabled(model.seekableRanges.isEmpty || model.reloading)
                             .accessibilityLabel("Video position")
                         Text(TimelinePolicy.clock(model.durationSeconds)).monospacedDigit()
                     }
@@ -563,7 +727,7 @@ struct ContentView: View {
                         .help("Back 10 seconds (Left Arrow).")
                     Button(model.playing || model.buffering ? "Pause" : "Play") {
                         if model.playing || model.buffering { model.player.pause() } else { model.player.play() }
-                    }.buttonStyle(.borderedProminent).controlSize(.large)
+                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.reloading)
                     Button { model.skip(by: 10) } label: { Label("10s", systemImage: "goforward.10") }
                         .disabled(!model.canSkip(by: 10))
                         .accessibilityLabel("Forward 10 seconds")
@@ -571,7 +735,7 @@ struct ContentView: View {
                 } else {
                     Button("Prepare for TV", action: model.prepare)
                         .buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.source.isEmpty || model.preparing || model.stopping)
+                        .disabled(model.source.isEmpty || model.preparing || model.stopping || model.reloading)
                 }
                 Button("Stop", action: model.stop).disabled(!busy)
                 if model.preparing || model.stopping || model.buffering { ProgressView().controlSize(.small) }
@@ -579,6 +743,11 @@ struct ContentView: View {
                 Text(stateLabel).font(.callout).foregroundStyle(.secondary)
             }
             Text(model.message).font(.callout).textSelection(.enabled)
+            if model.canReloadPreparedVideo || model.reloading {
+                Button(model.reloading ? "Restoring playback…" : "Reload prepared video", action: model.reloadPreparedVideo)
+                    .disabled(!model.canReloadPreparedVideo)
+                    .help("Reload this session’s existing prepared media and restore position, subtitles and playback state.")
+            }
             if !model.warning.isEmpty { Text(model.warning).font(.callout).foregroundStyle(.orange) }
             Divider()
             HStack {
@@ -594,7 +763,7 @@ struct ContentView: View {
                     ForEach(Array(model.choices.enumerated()), id: \.offset) { i, option in
                         Text(option.displayName).tag(i)
                     }
-                }.frame(width: 260).disabled(!model.ready)
+                }.frame(width: 260).disabled(!model.ready || model.reloading)
                     .onChange(of: model.selectedSubtitle) { _ in model.selectSubtitle() }
             }
             Text(model.subtitleStatus).font(.caption).foregroundStyle(.secondary)
@@ -607,6 +776,13 @@ struct ContentView: View {
                     Text("Prepare the video, choose Apple TV above, then press Play. Keep VideoBridge running and your Mac awake. Your TV must reach this Mac on the local network. Seeking ahead is available as preparation progresses.")
                     Text("DRM, live streams, image subtitles and browser-only login sessions are not supported. The subtitle test clip is available from the File menu.")
                 }.font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Playback diagnostics") {
+                ScrollView {
+                    Text(model.diagnosticEvents.isEmpty ? "No playback events recorded." : model.diagnosticEvents.joined(separator: "\n"))
+                        .font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: 110)
+                Text("Last 32 events, kept only in memory. No media URLs, file paths or tokens.").font(.caption).foregroundStyle(.secondary)
             }
         }.padding(22).frame(minWidth: 780, minHeight: 680)
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in

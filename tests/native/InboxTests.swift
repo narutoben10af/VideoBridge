@@ -30,6 +30,22 @@
         let first = TimelinePolicy.skipTarget(from: 25, by: 10, in: ranges)!
         check("rapid repeated targets accumulate", TimelinePolicy.skipTarget(from: first, by: 10, in: ranges) == 45)
         print("\(passed) seek and keyboard policy checks passed")
+        var state = RecoveryRetryState()
+        let original = RecoverySnapshot(position: 947, subtitle: nil, subtitlesOff: true, wasPlaying: false)
+        let recoveryFirst = state.begin(current: original)
+        precondition(recoveryFirst.position == 947 && recoveryFirst.subtitlesOff && !recoveryFirst.wasPlaying)
+        // A timed-out replacement is at zero with its default language; retry must retain the first snapshot.
+        let failedReplacement = RecoverySnapshot(position: 0, subtitle: "default", subtitlesOff: false, wasPlaying: true)
+        let retry = state.begin(current: failedReplacement)
+        precondition(retry.position == 947 && retry.subtitle == nil && retry.subtitlesOff && !retry.wasPlaying)
+        state.updateSubtitle("Chinese", off: false)
+        let changed = state.begin(current: failedReplacement)
+        precondition(changed.position == 947 && changed.subtitle as? String == "Chinese" && !changed.subtitlesOff && !changed.wasPlaying)
+        state.reset()
+        precondition(state.saved == nil)
+        let newSession = state.begin(current: RecoverySnapshot(position: 12, subtitle: "English", subtitlesOff: false, wasPlaying: true))
+        precondition(newSession.position == 12 && newSession.wasPlaying)
+        print("5 recovery retry policy checks passed")
         let fm = FileManager.default
         let inbox = testHome.appendingPathComponent("Library/Application Support/VideoBridge/Inbox")
         try fm.createDirectory(at: inbox, withIntermediateDirectories: true)
