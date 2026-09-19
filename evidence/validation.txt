@@ -1,0 +1,11 @@
+Local validation — 2026-09-19
+
+Swift build and ad-hoc signature verification: PASS.
+Python suite: 14 tests (see current local/hosted logs for duration), PASS.
+Fixture: 30 seconds, H.264/AAC, 640x360, two separate subtitle languages.
+Timeline: video +21.016 ms constant shift; no measured drift across 750 frames. Audio +21.333 ms. Subtitle cue timestamps unchanged.
+Physical receiver: user confirmed video + English; Chinese selection; Off; seek alignment.
+Background use: user confirmed video/captions continue while switching Mac apps or minimizing the app (short clip only).
+Pending: receiver model/tvOS; long soak; browser integration; broad codec/device/network testing; release packaging.
+
+These results establish the tested local fixture only. Hosted CI status is recorded on the pull request, not inferred from this local result.

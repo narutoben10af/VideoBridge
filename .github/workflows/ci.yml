@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-build:
+    name: macOS build
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Compile and verify ad-hoc signature
+        run: bash scripts/build.sh
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check CI disk budget
+        run: |
+          df -Pk /
+          python3 -c 'import shutil; assert shutil.disk_usage("/").free > (15728640 * 1024 + 3 * 1024**3), "Need 3 GiB CI dependency allowance above floor"'
+      - name: Install FFmpeg on disposable CI runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+      - name: Verify runtime and test storage budget
+        run: |
+          python3 --version
+          ffmpeg -version | head -n 1
+          df -Pk /
+          python3 -c 'import shutil; assert shutil.disk_usage("/").free > (15728640 * 1024 + 64 * 1024**2), "Need 64 MiB test allowance above floor"'
+      - name: Run deterministic and synthetic media tests
+        run: python3 -m unittest discover -s tests -v
+
+  review-evidence:
+    name: Review evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Verify artifact hashes and recorded coverage
+        run: python3 scripts/check_review_evidence.py

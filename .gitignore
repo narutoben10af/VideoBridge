@@ -1,0 +1,7 @@
+.DS_Store
+work/
+artifacts/
+*.app/
+__pycache__/
+*.pyc
+.env
