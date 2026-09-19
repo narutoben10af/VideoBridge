@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "source_sha256": {
+    ".github/PULL_REQUEST_TEMPLATE.md": "7efdcd07b12c1ac0867d77e358a23f75ecc2103f2fbf57a424e16276fc9fd7ab",
+    ".github/workflows/ci.yml": "224db8fb7a0d63f6c4d6c53ac3acee0d81ff0042f2ab14a9d6cc2f164369917e",
+    ".gitignore": "41f9358c164e2ee2a3aebde9ae5f7a4a2db934de5c69f0e5f7cd4fb66adf185d",
+    "AGENTS.md": "f112bf8631ebdeb3e3a231537521c5773e9ad9de510747e3bbc17251a8cbb0a2",
+    "CONTRIBUTING.md": "e6397ac3ed1e3cba67a873c6f77dcf27dd6781ec29a65653896ec0670a4b1b23",
+    "README.md": "c249635703dfce20b1a559952fc57f3ac45049586acd63e788e302e015031e40",
+    "app/VideoBridge.swift": "df8fbcadd6f887beccbfbbf40fcee948fc6d193c27e1018f00df3f105ddbd5c8",
+    "app/process_worker.py": "f51c03d80dc62632356db300c4ac62476728025c8ac03a78170a0cefb2858686",
+    "app/relay.py": "446b75c949be690ba90c3a5e0fbe68349ac7dd4fa9847f9828a9a5231c69a577",
+    "docs/ARCHITECTURE.md": "5b8073ed8533ba2501402acab0e6fc4a508c2ff801b9018f39a006e028e00cce",
+    "docs/PRODUCT.md": "cec9a20492985c3c90a22ed0606f1f21171d5336221a1c8b622985aa8c9852fd",
+    "docs/PROTOCOL.md": "ac2a7c04b47fd69cd58a909c6e1fa94ba876820e1eb035871f11f7ba64914558",
+    "docs/QUALITY.md": "0a7fe3ddf9c3decb75c5f714b6bf3e7ee36f56597c78faf6798b58b32a2ea283",
+    "docs/ROADMAP.md": "ef64eff7630cf520b280265493dbc15bb1c9a24f68d9aadec1a2d3ebb6ecd00a",
+    "docs/STATUS.md": "b3b80b3f59de22cb38f96db06b8cb23c57a36064364771a8dd3a8007c9d625fd",
+    "evidence/validation.txt": "69610ecc1e9ada65a77326f60d54fea6fee1cf315bede87e9c517eb1e93c2fa7",
+    "scripts/build.sh": "aff98304ff536c4c1bc2af257c27b60ca269166507989309f4fc990831504779",
+    "scripts/check_review_evidence.py": "c79bd43b84bfcee0734e60c9786c78e577129073c301d7187dddab6ded8d84b4",
+    "scripts/make_m0_fixture.py": "9b53d32c84039ed93413a46cbbe07aa20e835869223bb9a247b6677e49f04c6a",
+    "tests/test_process_worker.py": "44b24bdfe8448498941bab66f973c30d818123172f3607677c74fe7161bbc2ec",
+    "tests/test_relay.py": "b4c4c7ef2528fa4933aff1f89a00ed6025ba629c006d56bc6834d1e7dd77bf3e"
+  },
+  "reviews": [
+    {
+      "reviewer_id": "/root/independent_pr_review",
+      "reviewed_at_utc": "2026-09-19T06:07:56.900968+00:00",
+      "disposition": "approved",
+      "summary": "Independently reviewed all 21 files for scoped local AirPlay feasibility, public-data hygiene, lifecycle, subtitles, CI/build configuration, governance and review-checker integrity. Final hashes verified; 14 local tests passed. Browser integration, production hardening, broader compatibility and release readiness remain explicitly unverified. Physical receiver observations are user-assisted evidence.",
+      "findings": [
+        {
+          "severity": "P2",
+          "status": "resolved",
+          "summary": "Silent lossy conversion removed: unsupported/high-bit-depth/HDR video rejected; accepted video stream-copied; stereo AAC conversion visibly disclosed."
+        }
+      ],
+      "covered_paths": [
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "README.md",
+        "app/VideoBridge.swift",
+        "app/process_worker.py",
+        "app/relay.py",
+        "docs/ARCHITECTURE.md",
+        "docs/PRODUCT.md",
+        "docs/PROTOCOL.md",
+        "docs/QUALITY.md",
+        "docs/ROADMAP.md",
+        "docs/STATUS.md",
+        "evidence/validation.txt",
+        "scripts/build.sh",
+        "scripts/check_review_evidence.py",
+        "scripts/make_m0_fixture.py",
+        "tests/test_process_worker.py",
+        "tests/test_relay.py"
+      ]
+    }
+  ]
+}
