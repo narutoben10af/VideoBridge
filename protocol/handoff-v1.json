@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:videobridge:handoff:1",
+  "title": "VideoBridge browser request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocolVersion", "requestId", "type", "payload"],
+  "properties": {
+    "protocolVersion": {"const": 1},
+    "requestId": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "type": {"enum": ["offerMedia", "getCapabilities"]},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "getCapabilities"}}},
+     "then": {"properties": {"payload": {"maxProperties": 0}}}},
+    {"if": {"properties": {"type": {"const": "offerMedia"}}},
+     "then": {"properties": {"payload": {
+       "additionalProperties": false,
+       "required": ["url", "title", "referer", "currentTime", "subtitles"],
+       "properties": {
+         "url": {"$ref": "#/$defs/url"},
+         "title": {"type": "string", "maxLength": 200},
+         "referer": {"anyOf": [{"const": ""}, {"$ref": "#/$defs/url"}]},
+         "currentTime": {"type": "number", "minimum": 0, "maximum": 86400},
+         "subtitles": {"type": "array", "maxItems": 16, "items": {
+           "type": "object", "additionalProperties": false,
+           "required": ["url", "label", "language"],
+           "properties": {
+             "url": {"$ref": "#/$defs/url"},
+             "label": {"type": "string", "maxLength": 100},
+             "language": {"type": "string", "minLength": 1, "maxLength": 35}
+           }
+         }}
+       }
+     }}}}
+  ],
+  "$defs": {"url": {"type": "string", "minLength": 1, "maxLength": 16000, "pattern": "^https://"}}
+}

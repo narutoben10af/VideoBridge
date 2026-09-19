@@ -1,0 +1,23 @@
+{
+  "protocolVersion": 1,
+  "requestId": "bc47cdd5-e533-46a8-8b0d-55d691d3b9a1",
+  "type": "offerMedia",
+  "payload": {
+    "url": "https://media.example.org/video.mp4",
+    "title": "Synthetic fixture",
+    "referer": "https://example.org/watch",
+    "currentTime": 12.5,
+    "subtitles": [
+      {
+        "url": "https://media.example.org/en.vtt",
+        "label": "English",
+        "language": "en"
+      },
+      {
+        "url": "https://media.example.org/zh.vtt",
+        "label": "中文",
+        "language": "zh"
+      }
+    ]
+  }
+}

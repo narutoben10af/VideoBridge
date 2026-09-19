@@ -4,7 +4,7 @@ Read AGENTS.md and the current milestone/status before changing code. Work on a 
 
 ## Validation and merge gate
 
-Require hosted checks named **macOS build**, **Python tests**, and **Review evidence** on the current PR artifact, plus resolved independent review findings. CI compiles the macOS app, verifies its ad-hoc signature, and runs Python tests with small synthetic fixtures. FFmpeg is installed only on the disposable Linux CI runner. It does not test an Apple TV, external websites, browser extensions, distribution signing or a production release. No extension exists yet, so there is no browser-test claim.
+Require hosted checks named **macOS build**, **Python tests**, and **Review evidence** on the current PR artifact, plus resolved independent review findings. CI compiles the macOS app, verifies its ad-hoc signature, and runs Python synthetic media tests, Node extension contract tests and native inbox/timeline regressions. FFmpeg is installed only on the disposable Linux CI runner. It does not automate an Apple TV, live external websites, installed browser interaction, distribution signing or a production release. Keep deterministic extension checks separate from live browser/receiver acceptance.
 
 Independent review may be performed by another human or a separately assigned agent that did not implement the covered change. Record the actual reviewer identifier and its returned findings. Agent review evidence is not a GitHub approval, and a repository owner's impossible self-approval is not required. Repository protection and the merge operator enforce the review policy; the hash checker establishes only artifact consistency and nonempty metadata. Do not manufacture reviewer identities or findings to satisfy it.
 

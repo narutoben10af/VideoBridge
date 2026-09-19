@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Native inbox regression tests
+        run: python3 scripts/test_native_inbox.py
       - name: Compile and verify ad-hoc signature
         run: bash scripts/build.sh
 
@@ -47,6 +49,8 @@ jobs:
           ffmpeg -version | head -n 1
           df -Pk /
           python3 -c 'import shutil; assert shutil.disk_usage("/").free > (15728640 * 1024 + 64 * 1024**2), "Need 64 MiB test allowance above floor"'
+      - name: Browser extension contract tests
+        run: node --test tests/browser/*.test.cjs
       - name: Run deterministic and synthetic media tests
         run: python3 -m unittest discover -s tests -v
 

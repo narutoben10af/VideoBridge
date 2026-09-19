@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "VideoBridge",
+  "version": "0.2.0",
+  "description": "Send a selected video and subtitle files to the VideoBridge Mac app.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_title": "Play video on TV"
+  },
+  "background": {
+    "scripts": [
+      "core.js",
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "videobridge@local.app",
+      "strict_min_version": "128.0"
+    }
+  }
+}
