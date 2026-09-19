@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>VideoBridge</title><link rel="stylesheet" href="popup.css"></head>
+<body><header><h1>VideoBridge</h1><p>Video on your TV. Your Mac stays yours.</p></header>
+<main><p id="status" role="status" aria-live="polite">Looking for videos in this tab…</p>
+<label for="videos">Video</label><select id="videos" disabled><option value="">Choose a video</option></select>
+<p id="details"></p><fieldset id="subtitles" hidden><legend>Subtitles to send</legend><div id="tracks"></div></fieldset>
+<p id="warning" class="warning"></p><div id="permissions"></div>
+<button id="send" class="primary" disabled>Play on TV</button><button id="refresh">Refresh videos</button>
+<p class="note">The Mac app opens your selection. Choose Apple TV there. Your original video stays open and keeps playing until you pause it.</p>
+</main><script src="core.js"></script><script src="discovery.js"></script><script src="popup.js"></script></body></html>

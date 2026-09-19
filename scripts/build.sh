@@ -14,7 +14,7 @@ xcrun swiftc -swift-version 5 -parse-as-library -O -target arm64-apple-macosx13.
   "$ROOT/app/VideoBridge.swift" -o "$APP/Contents/MacOS/VideoBridge" \
   -framework SwiftUI -framework AppKit -framework AVKit -framework AVFoundation
 cp "$ROOT/app/relay.py" "$APP/Contents/Resources/relay.py"
-if [ -f "$ROOT/app/process_worker.py" ]; then cp "$ROOT/app/process_worker.py" "$APP/Contents/Resources/"; fi
+cp "$ROOT/app/process_worker.py" "$ROOT/app/remote_media.py" "$APP/Contents/Resources/"
 if [ -f "$ROOT/work/m0-fixture/video.mp4" ]; then
   mkdir -p "$APP/Contents/Resources/M0"
   cp "$ROOT/work/m0-fixture/"* "$APP/Contents/Resources/M0/"

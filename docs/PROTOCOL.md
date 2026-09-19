@@ -1,6 +1,6 @@
-# Browser/native contract proposal v1
+# Browser/native contracts
 
-This is a proposed contract, not the current spike's URL scheme implementation. Implement schema validation and shared fixtures before browser integration.
+The implemented v1 handoff is specified in [protocol/README.md](../protocol/README.md) and its JSON schema. It uses `offerMedia`, a bounded private inbox and an opaque launch token. The richer session-control messages below are future proposals; they are not implemented capabilities.
 
 ## Requests
 

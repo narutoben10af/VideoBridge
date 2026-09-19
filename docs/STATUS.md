@@ -18,12 +18,12 @@ VideoBridge is an early local-first macOS AirPlay prototype. The user requested 
 
 SwiftUI/AppKit file/drop entrypoint, AVPlayer preview, public AirPlay picker, legible-track selection/readback, bundled synthetic test entrypoint and helper status. Python media inspection/preparation with an owned cancellable process worker, FFmpeg HLS output, text-to-WebVTT rendition conversion, token-scoped generated-file serving on the selected IPv4 interface and preliminary free-space/session ceilings.
 
-No browser extension exists yet. No actual episode stream was extracted, downloaded or cast. The priority browser investigation established only an embedded cross-origin player and caption UI. No original user video was modified.
+Firefox/Chrome development extensions and versioned native messaging are implemented on the browser-handoff branch. Automated discovery/contract tests pass; both development extensions and companion registrations are installed. Complete browser-to-TV acceptance remains pending. The actual episode stream plus a selected English WebVTT file were handed from Firefox to the app and successfully prepared and played locally. Apple TV was selected, but AVPlayer did not report active external video playback; actual TV display remains unconfirmed. No original user video was modified.
 
 ## Known limitations
 
-1. Browser native messaging and authenticated/versioned handoff remain to be implemented; current URL-scheme experiment is not a production browser integration.
-2. Remote source handling lacks a complete scoped credential, redirect and nested-manifest access policy. Login-bound/DRM sources are not supported claims.
+1. Browser handoff uses a private bounded inbox and opaque UUID launch token. Firefox/Chrome live acceptance and Safari implementation remain open.
+2. An HTTPS broker validates and pins public DNS addresses and rewrites nested HLS references. Independent review found malformed-URI handling and expired-inbox recovery defects; both are fixed, along with oversized numeric request handling, and independent remediation checks pass. Login-bound/DRM sources are not supported claims.
 3. Production HTTP limits, full range semantics, crash recovery and all lifecycle race cases need broader tests. Tested cancellation covers inspection/subtitle work and the normal relay lifecycle.
 4. Preparation can create a whole-movie cache (8 GiB ceiling); seek ahead is limited to prepared content. Production needs bounded seekable caching.
 5. The prototype accepts only 8-bit H.264 SDR and preserves video through stream copy. Other codecs, HDR and high-bit-depth video are rejected until their conversion paths are validated. Audio conversion to stereo AAC is visibly disclosed before preparation.
@@ -46,3 +46,13 @@ Record exact receiver metadata and perform longer background/soak testing; then 
 - User authorized public repository, BeautyApp-style PR controls and merge to main when the scoped change is ready.
 
 - Independent review requested a fix for silent lossy conversion. The M0 path now rejects unsupported/HDR video before conversion and exposes audio loss before preparation; a regression test covers these cases.
+
+## Browser integration checkpoint
+
+- Native workflow now emphasizes Open video, Prepare for TV, choose Apple TV, Play and selectable subtitles. Incoming browser requests require explicit Replace video when a session is active.
+- Integrated builds passed; the current Python suite has 46 passing tests. Browser contract and native inbox/timeline tests run in CI. Physical Anikoto playback remains the next acceptance gate.
+- Firefox extension was loaded with user assistance; actual Anikoto discovery found master/media playlists and nine subtitle resources. The selected English file transferred successfully. Chrome extension loaded; its megaplay.buzz access grant is pending explicit approval after automatic review rejected it.
+
+- Browser selection now opens in a full tab to accommodate subtitle choices; recognizable filename language codes produce readable labels and are explicitly marked inferred.
+- Native seek controls use actual AVPlayer seekable ranges; browser-position resume is explicit and range-gated.
+- The bounded actual-episode test was stopped through the app; the helper reported prepared media removed. Source media and browsing tokens are not committed.

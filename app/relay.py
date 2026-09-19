@@ -7,6 +7,7 @@ import subprocess, sys, tempfile, threading, time
 from pathlib import Path
 from urllib.parse import urlsplit
 from process_worker import run_cancellable
+from remote_media import RemoteMediaBroker
 
 EARLY_FLOOR = 15_728_640 * 1024
 MAX_SESSION = 8 * 1024**3
@@ -191,13 +192,24 @@ def run(request):
     stopping = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
-    process = server = None
+    process = server = broker = None
     parent = os.getppid()
     # Session owns this directory exclusively; cleanup never touches source media.
     with tempfile.TemporaryDirectory(prefix='videobridge-') as directory:
         root = Path(directory)
         try:
-            process, duration, tracks = prepare(request, root, stopping, parent)
+            request = dict(request)
+            if request.get('source', '').startswith(('http://', 'https://')) or any(x.get('url', '').startswith(('http://', 'https://')) for x in request.get('subtitles', [])):
+                broker = RemoteMediaBroker(request.get('referer', ''))
+                if request.get('source', '').startswith(('http://', 'https://')):
+                    request['source'] = broker.map_url(request['source'])
+                request['subtitles'] = [dict(x, url=broker.map_url(x['url'])) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
+                request['referer'] = ''
+            try:
+                process, duration, tracks = prepare(request, root, stopping, parent)
+            except ValueError:
+                if broker and broker.last_error: raise ValueError(broker.last_error)
+                raise
             ready = False; started = time.monotonic(); complete = False
             while not stopping.wait(0.5):
                 if os.getppid() != parent: break
@@ -225,6 +237,7 @@ def run(request):
                 try: process.wait(timeout=5)
                 except subprocess.TimeoutExpired: process.kill(); process.wait()
             if server: server.shutdown(); server.server_close()
+            if broker: broker.close()
 
 if __name__ == '__main__':
     try:

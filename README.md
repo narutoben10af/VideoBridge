@@ -4,7 +4,7 @@ A planned macOS app for sending **video and selectable subtitles** to Apple TV w
 
 Sources: Safari, Chrome, Firefox, and local video files. The priority real-world browser case is Anikoto's embedded player. Local files may be opened directly in VideoBridge even if normally watched in QuickTime, VLC or another player.
 
-**Status: early local-playback prototype.** A user-assisted Apple TV test confirmed video, English and Chinese selectable soft subtitles, captions Off, seeking, and continued TV playback while using another Mac app. The current video path accepts 8-bit H.264 SDR only; audio becomes stereo AAC. No browser extension exists yet, and broad format/device compatibility is not established. Safari packaging requires full Xcode. This is not a production release.
+**Status: early local-playback prototype.** A user-assisted Apple TV test confirmed video, English and Chinese selectable soft subtitles, captions Off, seeking, and continued TV playback while using another Mac app. The current video path accepts 8-bit H.264 SDR only; audio becomes stereo AAC. Firefox and Chrome development extensions now exist; live browser/site acceptance and broad format/device compatibility are not established. Safari packaging requires full Xcode. This is not a production release.
 
 Start with:
 
@@ -19,7 +19,7 @@ Start with:
 
 ## Development
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for PR gates and independent review requirements. Native build: `scripts/build.sh`. Tests: `python3 -m unittest discover -s tests -v`. Optional synthetic test clip: `python3 scripts/make_m0_fixture.py`, then rebuild and choose **Load subtitle test** in the app.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for PR gates and independent review requirements. Native build: `scripts/build.sh`. Tests: `python3 -m unittest discover -s tests -v`. Optional synthetic test clip: `python3 scripts/make_m0_fixture.py`, then rebuild and choose **File → Load subtitle test clip** in the app.
 
 Python 3 and FFmpeg/ffprobe must be installed for this prototype. The current build targets Apple Silicon macOS 13+; observed device testing is narrower than that compile target. Keep the app running and Mac awake during relay playback. No commercial/user media is included in this repository.
 
