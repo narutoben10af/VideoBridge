@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from process_worker import run_cancellable
 from remote_media import RemoteMediaBroker
+from hls_publication import HLSPublisher
 
 EARLY_FLOOR = 15_728_640 * 1024
 MAX_SESSION = 8 * 1024**3
@@ -51,9 +52,6 @@ def probe(source, referer='', stopping=None, parent_pid=None):
 def quote_attr(s):
     return str(s).replace('"', "'").replace('\r', ' ').replace('\n', ' ')[:100]
 
-def subtitle_playlist(duration, file):
-    return f'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{math.ceil(duration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:{duration:.3f},\n{file}\n#EXT-X-ENDLIST\n'
-
 def master_playlist(tracks):
     text = '#EXTM3U\n#EXT-X-VERSION:7\n'
     used = set()
@@ -78,34 +76,35 @@ class MediaHandler(http.server.BaseHTTPRequestHandler):
         prefix = '/' + self.server.token + '/'
         if not path.startswith(prefix): self.send_error(404); return
         name = path[len(prefix):]
-        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|init\.mp4|segment\d+\.m4s', name):
+        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|sub\d+-\d{6}\.vtt|init\.mp4|segment\d+\.m4s', name):
             self.send_error(404); return
         file = self.server.root / name
-        try: size = file.stat().st_size
+        try: stream = file.open('rb')
         except OSError: self.send_error(404); return
-        start, end = 0, size - 1
-        header = self.headers.get('Range')
-        if header:
-            m = re.fullmatch(r'bytes=(\d+)-(\d*)', header)
-            if not m: self.send_error(416); return
-            start, end = int(m[1]), min(int(m[2]) if m[2] else end, end)
-            if start > end: self.send_error(416); return
-        self.send_response(206 if header else 200)
-        self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.mp4':'video/mp4','.m4s':'video/iso.segment'}[file.suffix])
-        self.send_header('Content-Length', str(max(0, end-start+1)))
-        self.send_header('Accept-Ranges', 'bytes')
-        self.send_header('Cache-Control', 'no-store' if file.suffix == '.m3u8' else 'private, max-age=60')
-        if header: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
-        self.end_headers()
-        if body:
-            try:
-                with file.open('rb') as f:
-                    f.seek(start); remaining = end-start+1
+        with stream:
+            size = os.fstat(stream.fileno()).st_size
+            start, end = 0, size - 1
+            header = self.headers.get('Range')
+            if header:
+                m = re.fullmatch(r'bytes=(\d+)-(\d*)', header)
+                if not m: self.send_error(416); return
+                start, end = int(m[1]), min(int(m[2]) if m[2] else end, end)
+                if start > end: self.send_error(416); return
+            self.send_response(206 if header else 200)
+            self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.mp4':'video/mp4','.m4s':'video/iso.segment'}[file.suffix])
+            self.send_header('Content-Length', str(max(0, end-start+1)))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Cache-Control', 'no-store' if file.suffix == '.m3u8' else 'private, max-age=60')
+            if header: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.end_headers()
+            if body:
+                try:
+                    stream.seek(start); remaining = end-start+1
                     while remaining > 0:
-                        data = f.read(min(128*1024, remaining))
+                        data = stream.read(min(128*1024, remaining))
                         if not data: break
                         self.wfile.write(data); remaining -= len(data)
-            except (BrokenPipeError, ConnectionResetError): pass
+                except (BrokenPipeError, ConnectionResetError): pass
 
 class MediaServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
@@ -176,14 +175,13 @@ def prepare(request, root, stopping, parent_pid):
         except subprocess.TimeoutExpired:
             raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
         if result.returncode: raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
-        (root / f'sub{i}.m3u8').write_text(subtitle_playlist(duration, f'sub{i}.vtt'))
     (root / 'master.m3u8').write_text(master_playlist(tracks))
     video_args = ['-c:v', 'copy']
     cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', *source_args(source, referer), '-map', f'0:{video["index"]}',
            '-map', '0:a:0?', *video_args, '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-sn',
            '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'fmp4',
            '-hls_flags', 'temp_file', '-hls_fmp4_init_filename', 'init.mp4',
-           '-hls_segment_filename', str(root / 'segment%06d.m4s'), str(root / 'video.m3u8')]
+           '-hls_segment_filename', str(root / 'segment%06d.m4s'), str(root / '_video.m3u8')]
     if stopping.is_set() or os.getppid() != parent_pid: raise InterruptedError()
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return process, duration, tracks
@@ -211,6 +209,7 @@ def run(request):
                 if broker and broker.last_error: raise ValueError(broker.last_error)
                 raise
             if broker and broker.last_error: raise ValueError(broker.last_error)
+            publisher = HLSPublisher(root, [root / f'sub{i}.vtt' for i in range(len(tracks))])
             ready = False; started = time.monotonic(); complete = False
             while not stopping.wait(0.5):
                 if os.getppid() != parent: break
@@ -221,6 +220,7 @@ def run(request):
                 code = process.poll()
                 if broker and broker.last_error: raise ValueError(broker.last_error)
                 if code not in (None, 0): raise ValueError('Video preparation failed. The stream may have expired or use an unsupported codec.')
+                publisher.publish()
                 if not ready and (root / 'video.m3u8').exists():
                     host = request.get('address') or lan_address()
                     socket.inet_aton(host)
@@ -228,10 +228,13 @@ def run(request):
                     threading.Thread(target=server.serve_forever, daemon=True).start()
                     if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('ready', url=f'http://{host}:{server.server_port}/{server.token}/master.m3u8', duration=duration,
+                         fullyPrepared=code == 0 and publisher.snapshot.complete,
                          subtitles=[dict(label=t['name'], language=t['language']) for t in tracks])
                     ready = True
                 if code == 0 and not complete:
                     if not ready: raise ValueError('No playable media was generated.')
+                    if not publisher.snapshot or not publisher.snapshot.complete:
+                        raise ValueError('Video preparation ended without a complete published playlist.')
                     if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('complete', message='Video is fully prepared; seeking is available throughout.')
                     complete = True

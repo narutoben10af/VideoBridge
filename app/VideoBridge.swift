@@ -174,6 +174,8 @@ struct RecoveryRetryState {
     private var preparedURL: URL?
     private var recoveryTask: Task<Void, Never>?
     private var subtitleLoadFinished = false
+    private var completionHandoffPending = false
+    private var timelineInteractionActive = false
     private struct Recovery {
         let position: Double
         let subtitle: Any?
@@ -268,17 +270,38 @@ struct RecoveryRetryState {
                 self.refreshTimeline()
                 self.captureDiagnostic(finished ? "seek_finished" : "seek_failed")
                 self.message = finished ? "Position: \(TimelinePolicy.clock(self.currentSeconds))." : "Seek did not complete. Try again when the video is ready."
+                self.attemptCompletionHandoff()
             }
         }
+    }
+    func setTimelineInteractionActive(_ active: Bool) {
+        timelineInteractionActive = active
+        if !active { attemptCompletionHandoff() }
+    }
+    private func attemptCompletionHandoff() {
+        guard completionHandoffPending, fullyPrepared, ready, subtitleLoadFinished,
+              !timelineInteractionActive, pendingSeekTarget == nil, !reloading, !stopping,
+              recoveryRetry.saved == nil, helper?.isRunning == true else { return }
+        refreshTimeline()
+        // An ended item has no resumable point in the half-open seekable range.
+        guard currentSeconds < durationSeconds else {
+            completionHandoffPending = false
+            captureDiagnostic("completion_handoff_already_ended")
+            return
+        }
+        completionHandoffPending = false
+        captureDiagnostic("completion_handoff_requested")
+        reloadPreparedVideo()
     }
     var canReloadPreparedVideo: Bool {
         fullyPrepared && preparedURL != nil && helper?.isRunning == true && !stopping && !reloading
     }
     func reloadPreparedVideo() {
         guard canReloadPreparedVideo, let url = preparedURL, let item = player.currentItem else { return }
+        completionHandoffPending = false
         refreshTimeline()
         let option = group.flatMap { item.currentMediaSelection.selectedMediaOption(in: $0) }
-        let saved = recoveryRetry.begin(current: RecoverySnapshot(position: currentSeconds, subtitle: option?.propertyList(), subtitlesOff: option == nil,
+        let saved = recoveryRetry.begin(current: RecoverySnapshot(position: pendingSeekTarget ?? currentSeconds, subtitle: option?.propertyList(), subtitlesOff: option == nil,
                                                                    wasPlaying: player.timeControlStatus != .paused))
         recovery = Recovery(position: saved.position, subtitle: saved.subtitle, subtitlesOff: saved.subtitlesOff, wasPlaying: saved.wasPlaying)
         seekRequest = UUID(); pendingSeekTarget = nil
@@ -345,6 +368,7 @@ struct RecoveryRetryState {
     func resumeBrowserPosition() { seek(to: startTime) }
     func stop() {
         generation = UUID(); seekRequest = UUID(); pendingSeekTarget = nil; fullyPrepared = false
+        completionHandoffPending = false; timelineInteractionActive = false
         recoveryTask?.cancel(); recoveryTask = nil; recovery = nil; recoveryRetry.reset(); reloading = false; preparedURL = nil
         diagnosticEvents = []
         if let active = helper, active.isRunning {
@@ -474,6 +498,7 @@ struct RecoveryRetryState {
             Task { @MainActor in
                 guard let self, self.generation == id else { return }
                 self.preparing = false; self.ready = false; self.helper = nil; self.preparedURL = nil
+                self.completionHandoffPending = false
                 if self.reloading { self.failRecovery("The media helper stopped during reload. Prepare the video again.") }
                 self.player.pause(); self.player.replaceCurrentItem(with: nil)
                 if !self.message.hasPrefix("Error:") {
@@ -498,17 +523,22 @@ struct RecoveryRetryState {
         case "status": message = event["message"] as? String ?? "Preparing…"
         case "warning": warning = event["message"] as? String ?? ""
         case "error":
+            completionHandoffPending = false
             if reloading { failRecovery("The media helper failed during reload. Prepare the video again.") }
             player.pause(); ready = false; preparing = false
             message = "Error: " + (event["message"] as? String ?? "Preparation failed.")
         case "complete":
             fullyPrepared = true
             message = event["message"] as? String ?? "Prepared."
+            attemptCompletionHandoff()
         case "ready":
             guard let raw = event["url"] as? String, let url = URL(string: raw) else { return }
             if let duration = event["duration"] as? Double, duration.isFinite, duration > 0 {
                 durationSeconds = duration
             }
+            let initiallyComplete = event["fullyPrepared"] as? Bool ?? false
+            fullyPrepared = fullyPrepared || initiallyComplete
+            completionHandoffPending = !initiallyComplete
             expectedSubtitles = (event["subtitles"] as? [[String: Any]])?.count ?? 0
             preparedURL = url
             installPreparedItem(url, id: id)
@@ -558,9 +588,12 @@ struct RecoveryRetryState {
             subtitleStatus = choices.isEmpty ? "No selectable subtitle tracks found." : "\(choices.count) selectable subtitle track(s). TV display still requires verification."
             subtitleLoadFinished = true
             if !reloading && recoveryRetry.saved == nil { selectedSubtitle = choices.isEmpty ? -1 : 0; selectSubtitle() }
+            attemptCompletionHandoff()
         } catch {
             if generation == id, player.currentItem === item {
+                completionHandoffPending = false
                 subtitleStatus = "Could not verify selectable subtitle tracks."
+                warning = "Automatic completion handoff could not verify subtitles. Reload prepared video manually when available."
                 if reloading { failRecovery("Subtitle tracks could not be verified after reload. Playback remains paused.") }
             }
         }
@@ -583,13 +616,13 @@ struct NativeVideo: NSViewRepresentable {
     let model: Playback
     func makeCoordinator() -> Coordinator { Coordinator(model: model) }
     func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView(); view.player = model.player; view.controlsStyle = .floating
+        let view = AVPlayerView(); view.player = model.player; view.controlsStyle = .none
         context.coordinator.view = view
         return view
     }
     func updateNSView(_ view: AVPlayerView, context: Context) {
         if view.player !== model.player { view.player = model.player }
-        let controls: AVPlayerViewControlsStyle = model.reloading ? .none : .floating
+        let controls: AVPlayerViewControlsStyle = .none
         if view.controlsStyle != controls { view.controlsStyle = controls }
     }
     static func dismantleNSView(_ view: AVPlayerView, coordinator: Coordinator) { coordinator.removeMonitor() }
@@ -693,9 +726,9 @@ struct ContentView: View {
                             min(max(0, scrubbing ? scrubSeconds : model.currentSeconds), max(1, model.durationSeconds))
                         }, set: { scrubSeconds = $0 }), in: 0...max(1, model.durationSeconds), onEditingChanged: { editing in
                             if editing {
-                                scrubSeconds = model.currentSeconds; scrubbing = true
+                                scrubSeconds = model.currentSeconds; scrubbing = true; model.setTimelineInteractionActive(true)
                             } else {
-                                scrubbing = false; model.seek(to: scrubSeconds)
+                                scrubbing = false; model.seek(to: scrubSeconds); model.setTimelineInteractionActive(false)
                             }
                         }).disabled(model.seekableRanges.isEmpty || model.reloading)
                             .accessibilityLabel("Video position")

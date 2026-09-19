@@ -36,11 +36,6 @@ class RelayTests(unittest.TestCase):
             with self.subTest(metadata=metadata), self.assertRaises(ValueError):
                 relay.validate_video_for_prototype(metadata)
 
-    def test_subtitle_duration_rounding(self):
-        text = relay.subtitle_playlist(8.125, 'sub0.vtt')
-        self.assertIn('#EXT-X-TARGETDURATION:9', text)
-        self.assertIn('#EXTINF:8.125', text)
-
     def test_server_is_scoped_and_supports_ranges(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp); (root / 'init.mp4').write_bytes(b'0123456789')
