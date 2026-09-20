@@ -18,6 +18,9 @@ Working name: VideoBridge. Local-first macOS application, initially for the user
 | R6 | Mac remains usable | Switch apps, switch tabs and minimize browser for at least 10 minutes; TV continues and other Mac audio is unaffected. |
 | R7 | Quality and speed | Choose a low-cost playback route; measure startup, CPU, memory, cache growth and subtitle timing. Meet declared performance targets or document limits before claiming support. |
 | R8 | Future expansion | Add a source adapter/format handler through a contract and fixtures without changing the receiver session state machine. |
+| R9 | Modern native macOS design | Main player and compact controller follow the approved Apple-inspired design direction; actual Liquid Glass uses supported native APIs and is verified in the running app. |
+| R10 | Compact menu-bar remote | Play/pause, ten-second seeking, subtitle selection and reopening the main window work while the main window is closed or minimized, using the same session. |
+| R11 | Stable pause/resume and seeking | Repeated pause/resume and ten-second seeks do not require corrective rewinds to restore audio/video/subtitle sync in the physical receiver test. |
 
 ## First supported tiers (targets, not current claims)
 
