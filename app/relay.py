@@ -4,6 +4,7 @@ Only generated media is served, behind an unguessable per-session URL.
 """
 import functools, http.server, json, math, os, re, secrets, shutil, signal, socket
 import subprocess, sys, tempfile, threading, time
+from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlsplit
 from process_worker import run_cancellable
@@ -49,6 +50,27 @@ def probe(source, referer='', stopping=None, parent_pid=None):
     if result.returncode: raise ValueError('Cannot open this media source. It may have expired, require login, or be protected.')
     return json.loads(result.stdout)
 
+def video_presentation_origin(path, stopping, parent_pid):
+    """Measure the generated first video presentation epoch, in 90kHz ticks.
+
+    Only an owned completed TS segment is inspected. Bounded packet inspection
+    includes the initial reordered frames; no network or source URL is used.
+    """
+    try:
+        result = run_cancellable([executable('ffprobe'), '-v', 'error', '-select_streams', 'v:0',
+            '-read_intervals', '%+#64', '-show_packets', '-show_streams',
+            '-show_entries', 'packet=pts:stream=time_base', '-of', 'json', str(path)],
+            stopping, parent_pid, timeout=15)
+        if result.returncode: raise ValueError()
+        data = json.loads(result.stdout)
+        scale = Fraction(data['streams'][0]['time_base'])
+        points = [Fraction(packet['pts']) * scale * 90000 for packet in data['packets']]
+        origin = min(points)
+        if origin.denominator != 1 or not 0 <= origin < 2**33: raise ValueError()
+        return int(origin)
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, subprocess.TimeoutExpired):
+        raise ValueError('Cannot establish a safe video presentation timestamp for subtitle synchronization.') from None
+
 def quote_attr(s):
     return str(s).replace('"', "'").replace('\r', ' ').replace('\n', ' ')[:100]
 
@@ -76,7 +98,7 @@ class MediaHandler(http.server.BaseHTTPRequestHandler):
         prefix = '/' + self.server.token + '/'
         if not path.startswith(prefix): self.send_error(404); return
         name = path[len(prefix):]
-        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|sub\d+-\d{6}\.vtt|init\.mp4|segment\d+\.m4s', name):
+        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|sub\d+-\d{6}\.vtt|segment\d{6}\.ts', name):
             self.send_error(404); return
         file = self.server.root / name
         try: stream = file.open('rb')
@@ -91,7 +113,7 @@ class MediaHandler(http.server.BaseHTTPRequestHandler):
                 start, end = int(m[1]), min(int(m[2]) if m[2] else end, end)
                 if start > end: self.send_error(416); return
             self.send_response(206 if header else 200)
-            self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.mp4':'video/mp4','.m4s':'video/iso.segment'}[file.suffix])
+            self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.ts':'video/mp2t'}[file.suffix])
             self.send_header('Content-Length', str(max(0, end-start+1)))
             self.send_header('Accept-Ranges', 'bytes')
             self.send_header('Cache-Control', 'no-store' if file.suffix == '.m3u8' else 'private, max-age=60')
@@ -139,6 +161,21 @@ def prepare(request, root, stopping, parent_pid):
     duration = float(info.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('This prototype requires a finite-duration video. Live streams are not supported yet.')
+    source_epoch = float(info.get('format', {}).get('start_time', 0))
+    if not math.isfinite(source_epoch) or source_epoch < 0 or source_epoch + duration >= 2**33 / 90000:
+        raise ValueError('Negative or wrapped source timestamp epochs require an unsupported timeline path.')
+    try:
+        # Sidecars/browser cues use the shared presentation timeline, which can
+        # start before video (for example, audio at 0 and video at 2 seconds).
+        source_video_start = Fraction(video['start_pts']) * Fraction(video['time_base'])
+        source_video_offset = round((source_video_start - Fraction(str(info['format']['start_time']))) * 90000)
+        if source_video_offset < 0: raise ValueError()
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+        raise ValueError('Cannot establish the source video offset on the shared subtitle timeline.') from None
+    # Allow ordinary packet/frame onset skew, not a delayed video track.
+    # AVFoundation's video-driven HLS timeline cannot retain a leading audio interval.
+    if source_video_offset > 9000:
+        raise ValueError('Initial audio/video offset exceeds 100 ms; preserving this staggered timeline is not supported yet.')
     bitrate = max(float(info.get('format', {}).get('bit_rate', 0)), 8_000_000)
     estimate = int(duration * bitrate / 8 * 1.25)
     if estimate > MAX_SESSION: raise ValueError('Estimated preparation exceeds the 8 GiB session limit.')
@@ -177,14 +214,14 @@ def prepare(request, root, stopping, parent_pid):
         if result.returncode: raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
     (root / 'master.m3u8').write_text(master_playlist(tracks))
     video_args = ['-c:v', 'copy']
-    cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', *source_args(source, referer), '-map', f'0:{video["index"]}',
+    cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-copyts', '-start_at_zero', *source_args(source, referer), '-map', f'0:{video["index"]}',
            '-map', '0:a:0?', *video_args, '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-sn',
-           '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'fmp4',
-           '-hls_flags', 'temp_file', '-hls_fmp4_init_filename', 'init.mp4',
-           '-hls_segment_filename', str(root / 'segment%06d.m4s'), str(root / '_video.m3u8')]
+           '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'mpegts',
+           '-hls_flags', 'temp_file',
+           '-hls_segment_filename', str(root / 'segment%06d.ts'), str(root / '_video.m3u8')]
     if stopping.is_set() or os.getppid() != parent_pid: raise InterruptedError()
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    return process, duration, tracks
+    return process, duration, tracks, source_video_offset
 
 def run(request):
     stopping = threading.Event()
@@ -204,12 +241,14 @@ def run(request):
                 request['subtitles'] = [dict(x, url=broker.map_url(x['url'])) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
                 request['referer'] = ''
             try:
-                process, duration, tracks = prepare(request, root, stopping, parent)
+                process, duration, tracks, source_video_offset = prepare(request, root, stopping, parent)
             except ValueError:
                 if broker and broker.last_error: raise ValueError(broker.last_error)
                 raise
             if broker and broker.last_error: raise ValueError(broker.last_error)
-            publisher = HLSPublisher(root, [root / f'sub{i}.vtt' for i in range(len(tracks))])
+            publisher = HLSPublisher(root, [root / f'sub{i}.vtt' for i in range(len(tracks))],
+                                     timestamp_probe=lambda path: video_presentation_origin(path, stopping, parent) - source_video_offset,
+                                     video_start_offset=source_video_offset / 90000)
             ready = False; started = time.monotonic(); complete = False
             while not stopping.wait(0.5):
                 if os.getppid() != parent: break

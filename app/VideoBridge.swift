@@ -669,59 +669,71 @@ struct ContentView: View {
     @StateObject private var model = Playback.shared
     @State private var scrubbing = false
     @State private var scrubSeconds: Double = 0
+    @State private var dropTargeted = false
     private var busy: Bool { model.preparing || model.ready || model.stopping || model.reloading }
+    private var working: Bool { model.preparing || model.stopping || model.reloading || model.buffering }
     private var stateLabel: String {
         if model.stopping { return "Stopping…" }
-        if model.reloading { return "Restoring prepared video…" }
+        if model.reloading { return "Restoring playback…" }
         if model.preparing { return "Preparing video…" }
         if model.buffering { return "Buffering…" }
-        if model.playing { return model.external ? "Playing on AirPlay" : "Playing · AirPlay not confirmed" }
-        if model.ready { return model.external ? "AirPlay connected · Paused" : "Paused · Choose Apple TV" }
-        return model.source.isEmpty ? "Choose a video to begin" : "Ready to prepare"
+        if model.playing { return model.external ? "Playing on AirPlay" : "Playing on this Mac" }
+        if model.ready { return model.external ? "Paused on AirPlay" : "Paused on this Mac" }
+        return model.source.isEmpty ? "Open a video to begin" : "Ready to prepare"
     }
+    private var hasError: Bool { model.message.hasPrefix("Error:") }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("VideoBridge").font(.largeTitle.bold())
-                    Text("Video on your TV. Your Mac stays yours.").foregroundStyle(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 5) {
-                    Text(model.external ? "AirPlay connected" : "Choose Apple TV")
-                        .font(.callout).foregroundStyle(model.external ? .green : .secondary)
-                    RoutePicker(player: model.player).frame(width: 44, height: 34)
-                }
-            }
+        VStack(spacing: 0) {
             if let incoming = model.incoming {
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("New browser video").font(.headline)
-                        Text(incoming.title?.isEmpty == false ? incoming.title! : "Browser video").lineLimit(1)
-                        Text("Your current video continues until you replace it.").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "tray.and.arrow.down").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("New browser video").font(.caption).foregroundStyle(.secondary)
+                        Text(incoming.title?.isEmpty == false ? incoming.title! : "Browser video").font(.callout.weight(.medium)).lineLimit(2)
+                        Text("Current playback continues until you replace it.").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Replace video", action: model.replaceWithIncoming)
                     Button("Dismiss") { model.incoming = nil }
-                }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                }.padding(14).background(.quaternary)
+                Divider()
             }
-            HStack {
-                Button("Open video…", action: model.chooseVideo).controlSize(.large)
-                Text("or drop a file here · send a video from your browser extension")
-                    .font(.callout).foregroundStyle(.secondary)
-                Spacer()
-            }
-            VStack(alignment: .leading, spacing: 5) {
-                Text(model.source.isEmpty ? "No video selected" : model.title).font(.headline).lineLimit(1)
-                Text("8-bit H.264 SDR video. Audio becomes stereo AAC. ASS subtitle styling is simplified.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            NativeVideo(model: model).frame(minHeight: 240).background(.black)
-            if model.ready {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(TimelinePolicy.clock(scrubbing ? scrubSeconds : model.currentSeconds))
-                            .monospacedDigit().frame(minWidth: 45, alignment: .leading)
+            NativeVideo(model: model)
+                .frame(minHeight: 260, maxHeight: .infinity)
+                .background(.black)
+                .overlay {
+                    if model.source.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "play.tv").font(.system(size: 42, weight: .light)).accessibilityHidden(true)
+                            Text("Your video. Your Apple TV.").font(.title2.weight(.semibold))
+                            Text("Drop a video here, or send one from your browser extension.")
+                                .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                            Button("Open video…", action: model.chooseVideo).buttonStyle(.borderedProminent).controlSize(.large)
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(nsColor: .windowBackgroundColor))
+                    }
+                }
+                .overlay { if dropTargeted { RoundedRectangle(cornerRadius: 8).strokeBorder(.tint, lineWidth: 3).padding(6).allowsHitTesting(false) } }
+                .layoutPriority(1)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.source.isEmpty ? "VideoBridge" : model.title).font(.headline).lineLimit(2)
+                        HStack(spacing: 6) {
+                            if working { ProgressView().controlSize(.small).accessibilityLabel(stateLabel) }
+                            Text(stateLabel).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if model.ready {
+                        Label(model.fullyPrepared ? "Fully prepared" : "Preparing remaining video", systemImage: model.fullyPrepared ? "checkmark.circle" : "arrow.down.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if model.ready {
+                    HStack(spacing: 10) {
+                        Text(TimelinePolicy.clock(scrubbing ? scrubSeconds : model.currentSeconds)).monospacedDigit().frame(minWidth: 44, alignment: .leading)
                         Slider(value: Binding(get: {
                             min(max(0, scrubbing ? scrubSeconds : model.currentSeconds), max(1, model.durationSeconds))
                         }, set: { scrubSeconds = $0 }), in: 0...max(1, model.durationSeconds), onEditingChanged: { editing in
@@ -730,95 +742,94 @@ struct ContentView: View {
                             } else {
                                 scrubbing = false; model.seek(to: scrubSeconds); model.setTimelineInteractionActive(false)
                             }
-                        }).disabled(model.seekableRanges.isEmpty || model.reloading)
-                            .accessibilityLabel("Video position")
+                        }).disabled(model.seekableRanges.isEmpty || model.reloading).accessibilityLabel("Video position")
                         Text(TimelinePolicy.clock(model.durationSeconds)).monospacedDigit()
-                    }
-                    HStack {
-                        Label(model.fullyPrepared ? "Fully prepared" : "Preparing remaining video…", systemImage: model.fullyPrepared ? "checkmark.circle" : "arrow.down.circle")
-                            .font(.caption).foregroundStyle(model.fullyPrepared ? .green : .secondary)
-                        Spacer()
-                    }
-                    HStack {
-                        Text(model.seekableRanges.isEmpty ? "Waiting for seekable video…" :
-                            "Seekable: " + model.seekableRanges.map { TimelinePolicy.clock($0.lowerBound) + "–" + TimelinePolicy.clock($0.upperBound) }.joined(separator: ", "))
-                            .font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        if model.startTime > 0 {
-                            Button("Resume at browser position (\(TimelinePolicy.clock(model.startTime)))", action: model.resumeBrowserPosition)
-                                .disabled(!model.canResumeBrowserPosition)
-                                .help(model.canResumeBrowserPosition ? "Seek to the position received from your browser." : "Waiting for this part of the video to become seekable.")
-                        }
-                    }
+                    }.font(.caption)
                 }
-            }
-            HStack(spacing: 12) {
-                if model.ready {
-                    Button { model.skip(by: -10) } label: { Label("10s", systemImage: "gobackward.10") }
-                        .disabled(!model.canSkip(by: -10))
-                        .accessibilityLabel("Back 10 seconds")
-                        .help("Back 10 seconds (Left Arrow).")
-                    Button(model.playing || model.buffering ? "Pause" : "Play") {
-                        if model.playing || model.buffering { model.player.pause() } else { model.player.play() }
-                    }.buttonStyle(.borderedProminent).controlSize(.large).disabled(model.reloading)
-                    Button { model.skip(by: 10) } label: { Label("10s", systemImage: "goforward.10") }
-                        .disabled(!model.canSkip(by: 10))
-                        .accessibilityLabel("Forward 10 seconds")
-                        .help("Forward 10 seconds (Right Arrow).")
+                HStack(spacing: 18) {
+                    Button("Stop", action: model.stop).disabled(!busy).help("End this session and remove prepared media.")
+                    Spacer()
+                    if model.ready {
+                        Button { model.skip(by: -10) } label: { Image(systemName: "gobackward.10").font(.title2).frame(width: 38, height: 32) }
+                            .disabled(!model.canSkip(by: -10)).accessibilityLabel("Back 10 seconds").help("Back 10 seconds (Left Arrow).")
+                        Button {
+                            if model.playing || model.buffering { model.player.pause() } else { model.player.play() }
+                        } label: { Image(systemName: model.playing || model.buffering ? "pause.fill" : "play.fill").font(.title2).frame(width: 44, height: 34) }
+                            .buttonStyle(.borderedProminent).controlSize(.large).disabled(model.reloading)
+                            .accessibilityLabel(model.playing || model.buffering ? "Pause video" : "Play video")
+                        Button { model.skip(by: 10) } label: { Image(systemName: "goforward.10").font(.title2).frame(width: 38, height: 32) }
+                            .disabled(!model.canSkip(by: 10)).accessibilityLabel("Forward 10 seconds").help("Forward 10 seconds (Right Arrow).")
+                    } else {
+                        Button("Prepare for TV", action: model.prepare).buttonStyle(.borderedProminent).controlSize(.large)
+                            .disabled(model.source.isEmpty || model.preparing || model.stopping || model.reloading)
+                    }
+                    Spacer()
+                    Picker("Subtitles", selection: $model.selectedSubtitle) {
+                        Text("Off").tag(-1)
+                        ForEach(Array(model.choices.enumerated()), id: \.offset) { i, option in Text(option.displayName).tag(i) }
+                    }.pickerStyle(.menu).frame(maxWidth: 210).disabled(!model.ready || model.reloading)
+                        .onChange(of: model.selectedSubtitle) { _ in model.selectSubtitle() }
+                }
+                if !model.source.isEmpty && !busy {
+                    Text("8-bit H.264 SDR video. Audio becomes stereo AAC. ASS subtitle styling is simplified.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if hasError {
+                    Label(model.message, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.red)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Button("Prepare for TV", action: model.prepare)
-                        .buttonStyle(.borderedProminent).controlSize(.large)
-                        .disabled(model.source.isEmpty || model.preparing || model.stopping || model.reloading)
+                    Text(model.message).font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
-                Button("Stop", action: model.stop).disabled(!busy)
-                if model.preparing || model.stopping || model.buffering { ProgressView().controlSize(.small) }
-                Spacer()
-                Text(stateLabel).font(.callout).foregroundStyle(.secondary)
-            }
-            Text(model.message).font(.callout).textSelection(.enabled)
-            if model.canReloadPreparedVideo || model.reloading {
-                Button(model.reloading ? "Restoring playback…" : "Reload prepared video", action: model.reloadPreparedVideo)
-                    .disabled(!model.canReloadPreparedVideo)
-                    .help("Reload this session’s existing prepared media and restore position, subtitles and playback state.")
-            }
-            if !model.warning.isEmpty { Text(model.warning).font(.callout).foregroundStyle(.orange) }
-            Divider()
-            HStack {
-                Text("Subtitles").font(.headline)
-                Button("Add file…", action: model.chooseSubtitles).disabled(busy)
-                if !model.subtitles.isEmpty {
-                    Text("\(model.subtitles.count) added").foregroundStyle(.secondary)
-                    Button("Clear") { model.subtitles = [] }.disabled(busy)
+                if !model.warning.isEmpty {
+                    Label(model.warning, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer()
-                Picker("Language", selection: $model.selectedSubtitle) {
-                    Text("Off").tag(-1)
-                    ForEach(Array(model.choices.enumerated()), id: \.offset) { i, option in
-                        Text(option.displayName).tag(i)
+                HStack {
+                    Button("Add subtitles…", action: model.chooseSubtitles).disabled(busy)
+                    if !model.subtitles.isEmpty {
+                        Text("\(model.subtitles.count) added").font(.caption).foregroundStyle(.secondary)
+                        Button("Clear") { model.subtitles = [] }.disabled(busy)
                     }
-                }.frame(width: 260).disabled(!model.ready || model.reloading)
-                    .onChange(of: model.selectedSubtitle) { _ in model.selectSubtitle() }
+                    Spacer()
+                    if model.ready && model.startTime > 0 {
+                        Button("Resume at \(TimelinePolicy.clock(model.startTime))", action: model.resumeBrowserPosition)
+                            .disabled(!model.canResumeBrowserPosition).help("Resume at the browser position when it is seekable.")
+                    }
+                    if model.canReloadPreparedVideo || model.reloading {
+                        Button(model.reloading ? "Restoring…" : "Reload prepared video", action: model.reloadPreparedVideo)
+                            .disabled(!model.canReloadPreparedVideo).help("Restore this session’s prepared video, position and subtitles.")
+                    }
+                }.controlSize(.small)
+                DisclosureGroup("Details") {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(model.subtitleStatus).font(.caption)
+                            Text(model.seekableRanges.isEmpty ? "No seekable range reported yet." : "Seekable: " + model.seekableRanges.map { TimelinePolicy.clock($0.lowerBound) + "–" + TimelinePolicy.clock($0.upperBound) }.joined(separator: ", ")).font(.caption)
+                            TextField("Direct media URL or local file", text: Binding(get: { model.source }, set: { model.editSource($0) })).textFieldStyle(.roundedBorder).disabled(busy)
+                            TextField("Mac LAN IPv4 address (blank = automatic)", text: $model.address).textFieldStyle(.roundedBorder).disabled(busy)
+                            Text("Prepare the video, choose Apple TV, then press Play. Keep VideoBridge running and your Mac awake. Your TV must reach this Mac on the local network.").font(.caption)
+                            Text("DRM, live streams, image subtitles and browser-only login sessions are not supported. The subtitle test clip is available from the File menu.").font(.caption)
+                            Text("Playback diagnostics").font(.caption.weight(.semibold))
+                            Text(model.diagnosticEvents.isEmpty ? "No playback events recorded." : model.diagnosticEvents.joined(separator: "\n"))
+                                .font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Last 32 events, kept only in memory. No media URLs, file paths or tokens.").font(.caption)
+                        }.foregroundStyle(.secondary).padding(.top, 8)
+                    }.frame(maxHeight: 180)
+                }.font(.caption)
+            }.padding(20)
+            }.frame(minHeight: 240, idealHeight: 320, maxHeight: 400)
+        }.frame(minWidth: 760, minHeight: 640)
+        .toolbar {
+            ToolbarItem(placement: .automatic) { Button(action: model.chooseVideo) { Label("Open video", systemImage: "folder") }.help("Open a local video") }
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 6) {
+                    Text(model.external ? "AirPlay active" : "Choose Apple TV").font(.caption).foregroundStyle(.secondary)
+                    RoutePicker(player: model.player).frame(width: 38, height: 30)
+                }
             }
-            Text(model.subtitleStatus).font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("Source and connection settings") {
-                VStack(alignment: .leading, spacing: 8) {
-                    TextField("Direct media URL or local file", text: Binding(get: { model.source }, set: { model.editSource($0) }))
-                        .textFieldStyle(.roundedBorder).disabled(busy)
-                    TextField("Mac LAN IPv4 address (blank = automatic)", text: $model.address)
-                        .textFieldStyle(.roundedBorder).disabled(busy)
-                    Text("Prepare the video, choose Apple TV above, then press Play. Keep VideoBridge running and your Mac awake. Your TV must reach this Mac on the local network. Seeking ahead is available as preparation progresses.")
-                    Text("DRM, live streams, image subtitles and browser-only login sessions are not supported. The subtitle test clip is available from the File menu.")
-                }.font(.caption).foregroundStyle(.secondary)
-            }
-            DisclosureGroup("Playback diagnostics") {
-                ScrollView {
-                    Text(model.diagnosticEvents.isEmpty ? "No playback events recorded." : model.diagnosticEvents.joined(separator: "\n"))
-                        .font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxHeight: 110)
-                Text("Last 32 events, kept only in memory. No media URLs, file paths or tokens.").font(.caption).foregroundStyle(.secondary)
-            }
-        }.padding(22).frame(minWidth: 780, minHeight: 680)
-        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             guard let first = providers.first else { return false }
             _ = first.loadObject(ofClass: URL.self) { url, _ in
                 if let url { Task { @MainActor in model.receive(url) } }

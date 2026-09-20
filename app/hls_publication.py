@@ -29,7 +29,7 @@ def parse_video_manifest(raw):
         raise ValueError('Generated video playlist has invalid encoding.') from None
     if not lines or lines[0] != '#EXTM3U':
         raise ValueError('Generated video playlist has no HLS header.')
-    required = {'#EXT-X-VERSION', '#EXT-X-TARGETDURATION', '#EXT-X-MEDIA-SEQUENCE', '#EXT-X-PLAYLIST-TYPE', '#EXT-X-MAP'}
+    required = {'#EXT-X-VERSION', '#EXT-X-TARGETDURATION', '#EXT-X-MEDIA-SEQUENCE', '#EXT-X-PLAYLIST-TYPE'}
     fields, durations, names = {}, [], []
     pending = None
     complete = False
@@ -53,8 +53,8 @@ def parse_video_manifest(raw):
             if pending is not None:
                 raise ValueError('Generated video playlist ends before its segment URI.')
             complete = True
-        elif re.fullmatch(r'segment\d{6}\.m4s', line):
-            if pending is None or line != f'segment{len(names):06d}.m4s':
+        elif re.fullmatch(r'segment\d{6}\.ts', line):
+            if pending is None or line != f'segment{len(names):06d}.ts':
                 raise ValueError('Generated video segment sequence is invalid.')
             names.append(line); durations.append(pending); pending = None
             if len(names) > MAX_SEGMENTS:
@@ -63,7 +63,7 @@ def parse_video_manifest(raw):
             raise ValueError('Generated video playlist contains unsupported metadata or paths.')
     if set(fields) != required or pending is not None or not names:
         raise ValueError('Generated video playlist is incomplete.')
-    if fields['#EXT-X-VERSION'] != '7' or fields['#EXT-X-MEDIA-SEQUENCE'] != '0' or fields['#EXT-X-PLAYLIST-TYPE'] != 'EVENT' or fields['#EXT-X-MAP'] != 'URI="init.mp4"':
+    if fields['#EXT-X-VERSION'] != '3' or fields['#EXT-X-MEDIA-SEQUENCE'] != '0' or fields['#EXT-X-PLAYLIST-TYPE'] != 'EVENT':
         raise ValueError('Generated video playlist has unsupported timeline metadata.')
     target = fields['#EXT-X-TARGETDURATION']
     if not target.isdecimal() or len(target) > 5 or not 1 <= int(target) <= 86400:
@@ -89,7 +89,7 @@ def atomic_write(path, data):
 
 
 class HLSPublisher:
-    def __init__(self, root, subtitle_paths):
+    def __init__(self, root, subtitle_paths, timestamp_probe=None, video_start_offset=0):
         self.root = Path(root)
         self.subtitle_texts = []
         for path in subtitle_paths:
@@ -98,6 +98,11 @@ class HLSPublisher:
             if len(raw) > MAX_INPUT_BYTES:
                 raise ValueError('Prepared subtitle input exceeds its size limit.')
             self.subtitle_texts.append(raw.decode('utf-8-sig'))
+        if type(video_start_offset) not in (int, float) or not math.isfinite(video_start_offset) or not 0 <= video_start_offset <= 0.1:
+            raise ValueError('Unsupported initial video offset.')
+        self.video_start_offset = video_start_offset
+        self.timestamp_probe = timestamp_probe
+        self.mpegts_origin = None
         self.snapshot = None
         self.raw = None
 
@@ -116,14 +121,20 @@ class HLSPublisher:
                     current.names[:len(old.names)] != old.names or
                     current.durations[:len(old.durations)] != old.durations):
             raise ValueError('Generated EVENT playlist changed previously published media.')
-        for name in ('init.mp4', *current.names):
+        for name in current.names:
             path = self.root / name
             if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
                 raise ValueError('Generated video refers to an unavailable media file.')
+        if self.mpegts_origin is None:
+            if self.timestamp_probe is None:
+                raise ValueError('Generated video requires a measured presentation timestamp.')
+            self.mpegts_origin = self.timestamp_probe(self.root / current.names[0])
+        if type(self.mpegts_origin) is not int or not 0 <= self.mpegts_origin < 2**33 or self.mpegts_origin + math.ceil((sum(current.durations) + self.video_start_offset) * 90000) >= 2**33:
+            raise ValueError('Generated timeline crosses an unsupported MPEGTS timestamp wrap.')
         playlists = []
         for index, text in enumerate(self.subtitle_texts):
             package = package_webvtt(text, list(current.durations), current.target_duration,
-                                     current.complete, prefix=f'sub{index}')
+                                     current.complete, prefix=f'sub{index}', mpegts_origin=self.mpegts_origin, video_start_offset=self.video_start_offset)
             for name, data in package.segments.items():
                 path = self.root / name
                 if path.exists():

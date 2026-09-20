@@ -1,6 +1,6 @@
 # Native design direction
 
-Status: implementation follows playback stability work. This is an acceptance plan, not completed UI evidence.
+Status: a native toolbar/player/compact-controller implementation is prepared alongside the timing correction. Build and source checks pass; rendered UI and lifecycle acceptance remain pending. Genuine Liquid Glass is deferred with Xcode setup.
 
 Use the restraint of QuickTime Player, the clear playback hierarchy of Apple TV, and the compact controls of Apple Music as references. Preserve VideoBridge’s own name and purpose. Do not add a library, account, artwork service or browsing sidebar without a user need.
 

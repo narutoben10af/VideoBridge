@@ -38,16 +38,16 @@ class RelayTests(unittest.TestCase):
 
     def test_server_is_scoped_and_supports_ranges(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp); (root / 'init.mp4').write_bytes(b'0123456789')
+            root = Path(temp); (root / 'segment000000.ts').write_bytes(b'0123456789')
             server = relay.MediaServer(root, 'test-token', '127.0.0.1')
             worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
             base = f'http://127.0.0.1:{server.server_port}'
             try:
-                with urlopen(Request(base+'/test-token/init.mp4', headers={'Range':'bytes=2-5'})) as response:
+                with urlopen(Request(base+'/test-token/segment000000.ts', headers={'Range':'bytes=2-5'})) as response:
                     self.assertEqual(response.status, 206); self.assertEqual(response.read(), b'2345')
-                with urlopen(Request(base+'/test-token/init.mp4', method='HEAD')) as response:
+                with urlopen(Request(base+'/test-token/segment000000.ts', method='HEAD')) as response:
                     self.assertEqual(response.headers['Content-Length'], '10'); self.assertEqual(response.read(), b'')
-                for path in ['/wrong/init.mp4', '/test-token/../secret', '/test-token/%2e%2e/secret', '/test-token/relay.py']:
+                for path in ['/wrong/segment000000.ts', '/test-token/../secret', '/test-token/%2e%2e/secret', '/test-token/relay.py']:
                     with self.assertRaises(HTTPError) as error: urlopen(base+path)
                     self.assertEqual(error.exception.code, 404)
                     error.exception.close()

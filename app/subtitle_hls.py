@@ -97,7 +97,7 @@ def parse_webvtt(text):
     return common, cues
 
 
-def package_webvtt(text, segment_durations, target_duration, complete, prefix='sub0', playlist_type='EVENT'):
+def package_webvtt(text, segment_durations, target_duration, complete, prefix='sub0', playlist_type='EVENT', mpegts_origin=0, video_start_offset=0):
     if not isinstance(prefix, str) or not re.fullmatch(r'sub\d{1,3}', prefix):
         raise ValueError('Invalid subtitle rendition prefix.')
     if type(target_duration) is not int or not 1 <= target_duration <= 86400:
@@ -106,7 +106,9 @@ def package_webvtt(text, segment_durations, target_duration, complete, prefix='s
         raise ValueError('Invalid subtitle playlist type or completion state.')
     if not isinstance(segment_durations, (list, tuple)) or not 1 <= len(segment_durations) <= MAX_SEGMENTS:
         raise ValueError('Invalid video segment count.')
-    boundaries = [0.0]
+    if type(video_start_offset) not in (int, float) or not math.isfinite(video_start_offset) or not 0 <= video_start_offset <= 0.1:
+        raise ValueError('Unsupported initial video offset.')
+    boundaries = [float(video_start_offset)]
     for duration in segment_durations:
         if type(duration) not in (int, float) or not 0 < duration <= 86400 or not math.isfinite(duration):
             raise ValueError('Invalid video segment duration.')
@@ -115,7 +117,10 @@ def package_webvtt(text, segment_durations, target_duration, complete, prefix='s
         boundaries.append(boundaries[-1] + duration)
     if boundaries[-1] > 86400:
         raise ValueError('Video exceeds the supported finite timeline.')
+    if type(mpegts_origin) is not int or not 0 <= mpegts_origin < 2**33 or mpegts_origin + math.ceil(boundaries[-1] * 90000) >= 2**33:
+        raise ValueError('Subtitle timeline crosses an unsupported MPEGTS timestamp wrap.')
     common, cues = parse_webvtt(text)
+    common = common.replace('MPEGTS:0\n', f'MPEGTS:{mpegts_origin}\n', 1)
     assignments = [[] for _ in segment_durations]
     references = 0
     for cue in cues:

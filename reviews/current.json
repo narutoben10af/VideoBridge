@@ -7,21 +7,21 @@
     "AGENTS.md": "f112bf8631ebdeb3e3a231537521c5773e9ad9de510747e3bbc17251a8cbb0a2",
     "CONTRIBUTING.md": "845c3216dae6142a41c94a903dc1524a18af0ae78cf43a14839030488e1da9db",
     "README.md": "eddf4135714150f70ca3e92728082cdd52883a2cbbd0aedbfc214e8b4a5b14e4",
-    "app/MenuBarControls.swift": "526cf58be9a5523d0be0ef051dee6b6ce0b019ba05862fc9842b0dc21e5cf53a",
-    "app/VideoBridge.swift": "61b1a2d662afbab67b21ff7ea5cbf73fb467bde50567e8777614b54edccb6f83",
+    "app/MenuBarControls.swift": "ba01f54ea7a26ad521b8ebe64a911b825b2f587335a4807c3ab53c47cb03aade",
+    "app/VideoBridge.swift": "2c0a2cb8d7272586becf6be4fb51a3b36fdb279cef538b847805510ba9b5cf29",
     "app/bridge_protocol.py": "66f65e63b74c5c5a4b6de81b09149dbc266f193797649caa5f31c644a519d97d",
-    "app/hls_publication.py": "9dd8e5298ea7642e8cff0571efbafed437e857fc14341ea0dd31b537d83a170c",
+    "app/hls_publication.py": "65efc95329ae303413336bd90015b93aebedc7f781c8c53c3f5ae692db1882bb",
     "app/process_worker.py": "f51c03d80dc62632356db300c4ac62476728025c8ac03a78170a0cefb2858686",
-    "app/relay.py": "1130d441b48348267cddf3e335c2370190ef2c0f37c01d30567711c356015f7a",
+    "app/relay.py": "b7af53156607d0c8da29d75870ecf1287e06c4ab6a6166bb69de5ed45647b7a1",
     "app/remote_media.py": "720a2725ae98d9afc0f42ae8fd0d51903986117a65c02e6265edf63a0e3a5df6",
-    "app/subtitle_hls.py": "edd5c8747a7a4482975ba03e60a61b3b6d088d413453dce96427d209b776d5c5",
+    "app/subtitle_hls.py": "4ddefed5f01e6010a6fa62392c607dd181e7a6ef5204c0a7e498e50430c1f045",
     "docs/ARCHITECTURE.md": "5b8073ed8533ba2501402acab0e6fc4a508c2ff801b9018f39a006e028e00cce",
-    "docs/DESIGN.md": "04474c969b467f74f1c6d8f2d61eb20f565a798e8d39f67f68f58658da3f7f9b",
+    "docs/DESIGN.md": "58aca6a020cd13b33cc40bfbc7723fe7846598eac42c6f1221af2c8a043d17cd",
     "docs/PRODUCT.md": "bef4e52997b21a88e4d88b30563c41bfd5bc2d24b1324fe77d8161b519c2d996",
     "docs/PROTOCOL.md": "670efe1df898e5431496ccb1b564a723c1fa34258037fd53d7f2fb9ccae28ca5",
     "docs/QUALITY.md": "0a7fe3ddf9c3decb75c5f714b6bf3e7ee36f56597c78faf6798b58b32a2ea283",
     "docs/ROADMAP.md": "ef64eff7630cf520b280265493dbc15bb1c9a24f68d9aadec1a2d3ebb6ecd00a",
-    "docs/STATUS.md": "0bd1daa57d2b6933f39c8812e4e20a7025fbe2e77927fe6f0ffcd32ad914a294",
+    "docs/STATUS.md": "1f277d7ab54f931b0be9632ccf6237e2b12296e8fab0aaa309bfb8fe50b2cbcd",
     "evidence/validation.txt": "69610ecc1e9ada65a77326f60d54fea6fee1cf315bede87e9c517eb1e93c2fa7",
     "extensions/build.py": "6578dfbd8f3499b99377749f7e91525a84ebc24bffc6c7fc8958e744e118a3f4",
     "extensions/chrome/manifest.json": "c867083ad3de1e35f536c88ef94df90ae11a7416061fd939ef198c1a1154a5e4",
@@ -46,13 +46,14 @@
     "tests/native/InboxTests.swift": "bff1cc3faa2bfd837358a56d86b5dcfac508d6398fad68d8e0caec148cefa14b",
     "tests/native/PlaybackTests.swift": "a659dc03d526bdf993f33eebb4912aa46927b2e2a81a413f03f9253b396c1aa2",
     "tests/test_bridge_protocol.py": "46f87ef3dac202a46e3202cab7b3d26206cbe8ea1a00bc2efad34a7b036b9f8e",
-    "tests/test_hls_publication.py": "9d3959252b0cfc1c38cf2b5c82cdaee9f4a93cf2c535954dfd39b0b753a47f74",
+    "tests/test_hls_publication.py": "b89cab23cea5c022506228eb62303a2563562294372e015f6903863bcd6b89c9",
     "tests/test_native_host.py": "5813aefb897c70f7005101b486693fcaa109090613991f3a7c67e2cff2030a44",
     "tests/test_preparation_integrity.py": "9a83d6cd3225779b10b989e3824b75db8754e1e80fde7ff61d44e258910dfbfe",
     "tests/test_process_worker.py": "44b24bdfe8448498941bab66f973c30d818123172f3607677c74fe7161bbc2ec",
-    "tests/test_relay.py": "8ec8dd769b3cb642bd492740e82bbfb21d170cc287f4f0fe2599fcffcd663cf5",
+    "tests/test_relay.py": "a1f5bf9b07c64bf34ac84d50307fa781c357e9f8222c48954387f72b84ccbd95",
     "tests/test_remote_media.py": "afe45e8b5a529415722e34d706b305f3cf3a418f850dd1b8ac806f5abfd53314",
-    "tests/test_subtitle_hls.py": "4d3935aacaf5d73cb78172ff91bed4c7d66f020db24cedc64282995a8358024b"
+    "tests/test_subtitle_hls.py": "4d3935aacaf5d73cb78172ff91bed4c7d66f020db24cedc64282995a8358024b",
+    "tests/test_transport_timeline.py": "5e7ce8bdba191d6d01632fac772f6fd4754ca1972d44257992b66163762fe093"
   },
   "reviews": [
     {
@@ -113,7 +114,6 @@
       "reviewer_id": "/root/lifecycle_review",
       "reviewed_at_utc": "2026-09-19T17:08:37.695577+00:00",
       "covered_paths": [
-        "app/MenuBarControls.swift",
         "tests/native/InboxTests.swift"
       ],
       "summary": "Reviewed snapshot 939ba5b5c6ff6fcee99eb1cf7f5c29f5bc04dede3d1e7b75e74439f0a01cfb44. Retry position retention, late subtitle callbacks and competing control findings resolved. Local native recovery evidence is distinguished from pending menu/lifecycle/physical receiver validation. Approved updated draft only, not merge or general AV sync fix.",
@@ -125,22 +125,38 @@
       "reviewed_at_utc": "2026-09-19T20:16:48.180377+00:00",
       "covered_paths": [
         "README.md",
+        "docs/PRODUCT.md",
+        "scripts/build.sh",
+        "scripts/test_native_playback.py",
+        "tests/native/PlaybackTests.swift",
+        "tests/test_subtitle_hls.py"
+      ],
+      "summary": "Independently reviewed all 14 changed files and confirmed working and staged hashes match the frozen snapshot. Eleven focused Python tests independently passed; inspected three passing native integration logs, 36 native checks, build/signature evidence and whitespace check. Approved for draft PR only; physical receiver synchronization and site/window lifecycle acceptance remain pending. Resolved interaction/seek deferral and duplicate native scrub bypass concerns.",
+      "findings": [],
+      "disposition": "approved"
+    },
+    {
+      "reviewer_id": "/root/browser_security_review",
+      "reviewed_at_utc": "2026-09-20T17:37:13.135253+00:00",
+      "covered_paths": [
+        "app/MenuBarControls.swift",
         "app/VideoBridge.swift",
         "app/hls_publication.py",
         "app/relay.py",
         "app/subtitle_hls.py",
         "docs/DESIGN.md",
-        "docs/PRODUCT.md",
         "docs/STATUS.md",
-        "scripts/build.sh",
-        "scripts/test_native_playback.py",
-        "tests/native/PlaybackTests.swift",
         "tests/test_hls_publication.py",
         "tests/test_relay.py",
-        "tests/test_subtitle_hls.py"
+        "tests/test_transport_timeline.py"
       ],
-      "summary": "Independently reviewed all 14 changed files and confirmed working and staged hashes match the frozen snapshot. Eleven focused Python tests independently passed; inspected three passing native integration logs, 36 native checks, build/signature evidence and whitespace check. Approved for draft PR only; physical receiver synchronization and site/window lifecycle acceptance remain pending. Resolved interaction/seek deferral and duplicate native scrub bypass concerns.",
-      "findings": [],
+      "summary": "Independently reviewed final timing and native-view candidate against snapshot d0d3a56251fbefe6fef9b0890f469a4bde8bbe7452d27099d5fe7542845af9c8; seven focused timing tests passed. Approved draft source only; rendered UI, fresh handoffs, audible sync and receiver acceptance remain pending.",
+      "findings": [
+        {
+          "severity": "resolved",
+          "summary": "Corrected shared subtitle epoch and rejected initial video offsets over 100ms after native testing exposed leading-interval loss; accepted small onset offsets now also affect subtitle segment assignment."
+        }
+      ],
       "disposition": "approved"
     }
   ]

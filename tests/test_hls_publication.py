@@ -12,9 +12,9 @@ import relay
 
 
 def manifest(count=1, complete=False, target=4):
-    lines = ['#EXTM3U', '#EXT-X-VERSION:7', f'#EXT-X-TARGETDURATION:{target}',
-             '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:EVENT', '#EXT-X-MAP:URI="init.mp4"']
-    for index in range(count): lines += ['#EXTINF:4.000000,', f'segment{index:06d}.m4s']
+    lines = ['#EXTM3U', '#EXT-X-VERSION:3', f'#EXT-X-TARGETDURATION:{target}',
+             '#EXT-X-MEDIA-SEQUENCE:0', '#EXT-X-PLAYLIST-TYPE:EVENT']
+    for index in range(count): lines += ['#EXTINF:4.000000,', f'segment{index:06d}.ts']
     if complete: lines += ['#EXT-X-ENDLIST']
     return ('\n'.join(lines) + '\n').encode()
 
@@ -24,9 +24,9 @@ class PublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root/'init.mp4').write_bytes(b'init')
-            for i in range(2): (root/f'segment{i:06d}.m4s').write_bytes(b'media')
+            for i in range(2): (root/f'segment{i:06d}.ts').write_bytes(b'media')
             (root/'sub0.vtt').write_text('WEBVTT\n\n00:03.000 --> 00:05.000\nCrossing\n')
-            p = pub.HLSPublisher(root, [root/'sub0.vtt'])
+            p = pub.HLSPublisher(root, [root/'sub0.vtt'], timestamp_probe=lambda _: 133508)
             self.assertFalse(p.publish())
             private = root/'_video.m3u8'
             private.write_bytes(manifest())
@@ -48,28 +48,29 @@ class PublicationTests(unittest.TestCase):
                 self.assertEqual(writes, ['sub0-000001.vtt','sub0.m3u8','video.m3u8'])
                 self.assertEqual(first, (root/'sub0-000000.vtt').read_bytes())
             self.assertTrue(p.snapshot.complete)
+            self.assertIn(b'MPEGTS:133508', (root/'sub0-000001.vtt').read_bytes())
             self.assertIn(b'Crossing', (root/'sub0-000001.vtt').read_bytes())
             self.assertIn(b'#EXT-X-ENDLIST', (root/'sub0.m3u8').read_bytes())
 
     def test_changed_metadata_or_previous_segments_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            (root/'init.mp4').write_bytes(b'init'); (root/'segment000000.m4s').write_bytes(b'media')
+            (root/'init.mp4').write_bytes(b'init'); (root/'segment000000.ts').write_bytes(b'media')
             source = root/'_video.m3u8'; source.write_bytes(manifest())
-            p = pub.HLSPublisher(root, []); p.publish()
+            p = pub.HLSPublisher(root, [], timestamp_probe=lambda _: 133508); p.publish()
             for bad in [manifest(target=5), manifest().replace(b'4.000000', b'3.000000')]:
                 source.write_bytes(bad)
                 with self.assertRaises(ValueError): p.publish()
                 self.assertEqual((root/'video.m3u8').read_bytes(), manifest())
 
     def test_manifest_parser_and_unavailable_media_fail_closed(self):
-        for bad in [b'bad', manifest().replace(b'segment000000.m4s', b'https://example.com/a'),
+        for bad in [b'bad', manifest().replace(b'segment000000.ts', b'https://example.com/a'),
                     manifest().replace(b'EVENT', b'VOD'), manifest().replace(b':0\n', b':1\n'),
                     manifest().replace(b'#EXTINF:4.000000,', b'#EXT-X-DISCONTINUITY\n#EXTINF:4.000000,')]:
             with self.subTest(bad=bad), self.assertRaises(ValueError): pub.parse_video_manifest(bad)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); (root/'_video.m3u8').write_bytes(manifest())
-            with self.assertRaises(ValueError): pub.HLSPublisher(root, []).publish()
+            with self.assertRaises(ValueError): pub.HLSPublisher(root, [], timestamp_probe=lambda _: 133508).publish()
             self.assertFalse((root/'video.m3u8').exists())
 
     def test_atomic_publication_checks_temporary_space_before_mutation(self):

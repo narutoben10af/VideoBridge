@@ -14,8 +14,8 @@ struct MenuBarControls: View {
         if model.reloading { return "Restoring prepared video…" }
         if model.preparing { return "Preparing video…" }
         if model.buffering { return "Buffering…" }
-        if model.playing { return "Playing" }
-        if model.ready { return "Paused" }
+        if model.playing { return model.external ? "Playing on AirPlay" : "Playing on this Mac" }
+        if model.ready { return model.external ? "Paused on AirPlay" : "Paused on this Mac" }
         return model.source.isEmpty ? "No video selected" : "Ready to prepare"
     }
 
@@ -27,7 +27,8 @@ struct MenuBarControls: View {
                     .font(.title2).foregroundStyle(.tint)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("VideoBridge").font(.headline)
+                    Text(model.source.isEmpty ? "VideoBridge" : model.title)
+                        .font(.headline).lineLimit(2).fixedSize(horizontal: false, vertical: true)
                     Text(status).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -37,12 +38,12 @@ struct MenuBarControls: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(model.source.isEmpty ? "Open a video to get started" : model.title)
-                    .font(.callout.weight(.semibold)).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Label(model.external ? "AirPlay active" : "AirPlay not confirmed", systemImage: "airplayvideo")
-                    .font(.caption).foregroundStyle(model.external ? .green : .secondary)
-                    .accessibilityLabel(model.external ? "AirPlay external playback is active" : "AirPlay external playback is not confirmed")
+                HStack {
+                    Label(model.external ? "AirPlay active" : "Choose Apple TV", systemImage: "airplayvideo")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    RoutePicker(player: model.player).frame(width: 34, height: 28)
+                }
                 if model.ready {
                     Label(model.fullyPrepared ? "Fully prepared" : "Preparing remaining video…", systemImage: model.fullyPrepared ? "checkmark.circle" : "arrow.down.circle")
                         .font(.caption).foregroundStyle(.secondary)
@@ -96,6 +97,13 @@ struct MenuBarControls: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
                 Button("Open playback details", action: openMainWindow)
+            } else {
+                Text(model.message).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.canReloadPreparedVideo || model.reloading {
+                Button(model.reloading ? "Restoring…" : "Reload prepared video", action: model.reloadPreparedVideo)
+                    .disabled(!model.canReloadPreparedVideo)
             }
 
             if model.incoming != nil {
