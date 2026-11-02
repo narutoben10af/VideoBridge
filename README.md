@@ -26,3 +26,5 @@ Python 3 and FFmpeg/ffprobe must be installed for this prototype. The current bu
 ## Working practice
 
 Complete the physical Apple TV proof in milestone M0 before extending the product shell. Keep user media out of Git, fixtures synthetic and small, and status claims tied to exact evidence. No cloud service, accounts, analytics or paid dependency is required by the planned core design.
+
+Local AVFoundation integration checks: `python3 scripts/test_native_playback.py` , `python3 scripts/test_native_playback.py --progressive`, and `python3 scripts/test_native_playback.py --progressive-playing`. The progressive mode uses synthetic media and a test-only FFmpeg pacing wrapper to exercise completion during playback setup. These checks disable AirPlay and do not replace physical receiver acceptance. They require local FFmpeg and a usable Command Line Tools compiler and are not currently part of hosted CI.

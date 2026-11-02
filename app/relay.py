@@ -4,10 +4,12 @@ Only generated media is served, behind an unguessable per-session URL.
 """
 import functools, http.server, json, math, os, re, secrets, shutil, signal, socket
 import subprocess, sys, tempfile, threading, time
+from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlsplit
-from process_worker import run_cancellable
+from process_worker import run_cancellable, _stop_group
 from remote_media import RemoteMediaBroker
+from hls_publication import HLSPublisher
 
 EARLY_FLOOR = 15_728_640 * 1024
 MAX_SESSION = 8 * 1024**3
@@ -48,11 +50,29 @@ def probe(source, referer='', stopping=None, parent_pid=None):
     if result.returncode: raise ValueError('Cannot open this media source. It may have expired, require login, or be protected.')
     return json.loads(result.stdout)
 
+def video_presentation_origin(path, stopping, parent_pid):
+    """Measure the generated first video presentation epoch, in 90kHz ticks.
+
+    Only an owned completed TS segment is inspected. Bounded packet inspection
+    includes the initial reordered frames; no network or source URL is used.
+    """
+    try:
+        result = run_cancellable([executable('ffprobe'), '-v', 'error', '-select_streams', 'v:0',
+            '-read_intervals', '%+#64', '-show_packets', '-show_streams',
+            '-show_entries', 'packet=pts:stream=time_base', '-of', 'json', str(path)],
+            stopping, parent_pid, timeout=15)
+        if result.returncode: raise ValueError()
+        data = json.loads(result.stdout)
+        scale = Fraction(data['streams'][0]['time_base'])
+        points = [Fraction(packet['pts']) * scale * 90000 for packet in data['packets']]
+        origin = min(points)
+        if origin.denominator != 1 or not 0 <= origin < 2**33: raise ValueError()
+        return int(origin)
+    except (ValueError, KeyError, IndexError, TypeError, ZeroDivisionError, subprocess.TimeoutExpired):
+        raise ValueError('Cannot establish a safe video presentation timestamp for subtitle synchronization.') from None
+
 def quote_attr(s):
     return str(s).replace('"', "'").replace('\r', ' ').replace('\n', ' ')[:100]
-
-def subtitle_playlist(duration, file):
-    return f'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:{math.ceil(duration)}\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:{duration:.3f},\n{file}\n#EXT-X-ENDLIST\n'
 
 def master_playlist(tracks):
     text = '#EXTM3U\n#EXT-X-VERSION:7\n'
@@ -78,34 +98,35 @@ class MediaHandler(http.server.BaseHTTPRequestHandler):
         prefix = '/' + self.server.token + '/'
         if not path.startswith(prefix): self.send_error(404); return
         name = path[len(prefix):]
-        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|init\.mp4|segment\d+\.m4s', name):
+        if not re.fullmatch(r'(master|video|sub\d+)\.m3u8|sub\d+\.vtt|sub\d+-\d{6}\.vtt|segment\d{6}\.ts', name):
             self.send_error(404); return
         file = self.server.root / name
-        try: size = file.stat().st_size
+        try: stream = file.open('rb')
         except OSError: self.send_error(404); return
-        start, end = 0, size - 1
-        header = self.headers.get('Range')
-        if header:
-            m = re.fullmatch(r'bytes=(\d+)-(\d*)', header)
-            if not m: self.send_error(416); return
-            start, end = int(m[1]), min(int(m[2]) if m[2] else end, end)
-            if start > end: self.send_error(416); return
-        self.send_response(206 if header else 200)
-        self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.mp4':'video/mp4','.m4s':'video/iso.segment'}[file.suffix])
-        self.send_header('Content-Length', str(max(0, end-start+1)))
-        self.send_header('Accept-Ranges', 'bytes')
-        self.send_header('Cache-Control', 'no-store' if file.suffix == '.m3u8' else 'private, max-age=60')
-        if header: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
-        self.end_headers()
-        if body:
-            try:
-                with file.open('rb') as f:
-                    f.seek(start); remaining = end-start+1
+        with stream:
+            size = os.fstat(stream.fileno()).st_size
+            start, end = 0, size - 1
+            header = self.headers.get('Range')
+            if header:
+                m = re.fullmatch(r'bytes=(\d+)-(\d*)', header)
+                if not m: self.send_error(416); return
+                start, end = int(m[1]), min(int(m[2]) if m[2] else end, end)
+                if start > end: self.send_error(416); return
+            self.send_response(206 if header else 200)
+            self.send_header('Content-Type', {'.m3u8':'application/vnd.apple.mpegurl','.vtt':'text/vtt','.ts':'video/mp2t'}[file.suffix])
+            self.send_header('Content-Length', str(max(0, end-start+1)))
+            self.send_header('Accept-Ranges', 'bytes')
+            self.send_header('Cache-Control', 'no-store' if file.suffix == '.m3u8' else 'private, max-age=60')
+            if header: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+            self.end_headers()
+            if body:
+                try:
+                    stream.seek(start); remaining = end-start+1
                     while remaining > 0:
-                        data = f.read(min(128*1024, remaining))
+                        data = stream.read(min(128*1024, remaining))
                         if not data: break
                         self.wfile.write(data); remaining -= len(data)
-            except (BrokenPipeError, ConnectionResetError): pass
+                except (BrokenPipeError, ConnectionResetError): pass
 
 class MediaServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
@@ -131,8 +152,11 @@ def prepare(request, root, stopping, parent_pid):
     if not isinstance(source, str) or len(source) > 16000: raise ValueError('Invalid source.')
     referer = request.get('referer', '')
     ffmpeg = executable('ffmpeg')
+    preparation_started = time.monotonic()
     emit('status', message='Inspecting video and subtitle tracks…')
     info = probe(source, referer, stopping, parent_pid)
+    emit('status', phase='inspection', elapsedSeconds=round(time.monotonic()-preparation_started, 3),
+         message=f'Inspection finished in {time.monotonic()-preparation_started:.1f}s. Validating tracks…')
     streams = info.get('streams', [])
     video = next((x for x in streams if x.get('codec_type') == 'video' and not x.get('disposition', {}).get('attached_pic')), None)
     if video is None: raise ValueError('This source has no video track.')
@@ -140,6 +164,21 @@ def prepare(request, root, stopping, parent_pid):
     duration = float(info.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('This prototype requires a finite-duration video. Live streams are not supported yet.')
+    source_epoch = float(info.get('format', {}).get('start_time', 0))
+    if not math.isfinite(source_epoch) or source_epoch < 0 or source_epoch + duration >= 2**33 / 90000:
+        raise ValueError('Negative or wrapped source timestamp epochs require an unsupported timeline path.')
+    try:
+        # Sidecars/browser cues use the shared presentation timeline, which can
+        # start before video (for example, audio at 0 and video at 2 seconds).
+        source_video_start = Fraction(video['start_pts']) * Fraction(video['time_base'])
+        source_video_offset = round((source_video_start - Fraction(str(info['format']['start_time']))) * 90000)
+        if source_video_offset < 0: raise ValueError()
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError):
+        raise ValueError('Cannot establish the source video offset on the shared subtitle timeline.') from None
+    # Allow ordinary packet/frame onset skew, not a delayed video track.
+    # AVFoundation's video-driven HLS timeline cannot retain a leading audio interval.
+    if source_video_offset > 9000:
+        raise ValueError('Initial audio/video offset exceeds 100 ms; preserving this staggered timeline is not supported yet.')
     bitrate = max(float(info.get('format', {}).get('bit_rate', 0)), 8_000_000)
     estimate = int(duration * bitrate / 8 * 1.25)
     if estimate > MAX_SESSION: raise ValueError('Estimated preparation exceeds the 8 GiB session limit.')
@@ -167,26 +206,77 @@ def prepare(request, root, stopping, parent_pid):
             emit('warning', message='ASS/SSA subtitles retain text and timing with simplified styling.')
         tracks.append(dict(name=track.get('label', 'Subtitles'), language=track.get('language') or 'und',
                            input=source_args(subsource, referer if subsource.startswith('http') else ''), map='0:s:0'))
-    for i, track in enumerate(tracks):
-        if stopping.is_set(): raise InterruptedError()
-        emit('status', message=f'Preparing selectable subtitles {i+1}/{len(tracks)}…')
-        try:
-            result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', *track['input'], '-map', track['map'],
-                '-c:s', 'webvtt', '-y', str(root / f'sub{i}.vtt')], stopping, parent_pid, timeout=90, capture_output=False)
-        except subprocess.TimeoutExpired:
-            raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
-        if result.returncode: raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
-        (root / f'sub{i}.m3u8').write_text(subtitle_playlist(duration, f'sub{i}.vtt'))
-    (root / 'master.m3u8').write_text(master_playlist(tracks))
     video_args = ['-c:v', 'copy']
-    cmd = [ffmpeg, '-nostdin', '-v', 'error', *source_args(source, referer), '-map', f'0:{video["index"]}',
+    cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-copyts', '-start_at_zero', *source_args(source, referer), '-map', f'0:{video["index"]}',
            '-map', '0:a:0?', *video_args, '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-sn',
-           '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'fmp4',
-           '-hls_flags', 'temp_file', '-hls_fmp4_init_filename', 'init.mp4',
-           '-hls_segment_filename', str(root / 'segment%06d.m4s'), str(root / 'video.m3u8')]
+           '-f', 'hls', '-hls_time', '4', '-hls_playlist_type', 'event', '-hls_segment_type', 'mpegts',
+           '-hls_flags', 'temp_file',
+           '-hls_segment_filename', str(root / 'segment%06d.ts'), str(root / '_video.m3u8')]
     if stopping.is_set() or os.getppid() != parent_pid: raise InterruptedError()
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    return process, duration, tracks
+    # Video and subtitles run concurrently, but no public playlist/server is
+    # created until every requested subtitle has completed successfully.
+    video_started = time.monotonic()
+    done = threading.Event(); cancelled = threading.Event(); failures = []
+    def supervise():
+        while not done.is_set():
+            try:
+                if stopping.is_set() or os.getppid() != parent_pid:
+                    cancelled.set(); return
+                if process.poll() not in (None, 0):
+                    raise ValueError('Video preparation failed while preparing subtitles.')
+                size = 0
+                for path in root.iterdir():
+                    try:
+                        if path.is_file(): size += path.stat().st_size
+                    except FileNotFoundError:
+                        pass  # FFmpeg atomically renames its owned temporary outputs.
+                if size > MAX_SESSION or shutil.disk_usage(root).free <= EARLY_FLOOR:
+                    raise ValueError('Preparation stopped at the storage safety boundary.')
+            except Exception as error:
+                failures.append(error); cancelled.set(); return
+            done.wait(0.1)
+    monitor = threading.Thread(target=supervise, daemon=True)
+    try:
+        monitor.start()
+        emit('status', phase='video', elapsedSeconds=round(video_started-preparation_started, 3),
+             message='Preparing video and selectable subtitles…')
+        for i, track in enumerate(tracks):
+            if stopping.is_set() or cancelled.is_set() or os.getppid() != parent_pid:
+                raise InterruptedError()
+            subtitle_started = time.monotonic()
+            emit('status', phase='subtitles', track=i+1, trackCount=len(tracks),
+                 message=f'Preparing selectable subtitles {i+1}/{len(tracks)}; video is preparing in parallel…')
+            try:
+                result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', '-xerror', *track['input'], '-map', track['map'],
+                    '-c:s', 'webvtt', '-y', str(root / f'sub{i}.vtt')], cancelled, parent_pid, timeout=90, capture_output=False)
+            except subprocess.TimeoutExpired:
+                raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
+            if result.returncode:
+                raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
+            emit('status', phase='subtitles', track=i+1, trackCount=len(tracks),
+                 elapsedSeconds=round(time.monotonic()-subtitle_started, 3),
+                 message=f'Subtitle {i+1}/{len(tracks)} prepared in {time.monotonic()-subtitle_started:.1f}s.')
+        done.set(); monitor.join()
+        if failures: raise failures[0]
+        if stopping.is_set() or cancelled.is_set() or os.getppid() != parent_pid: raise InterruptedError()
+        if process.poll() not in (None, 0): raise ValueError('Video preparation failed while preparing subtitles.')
+        (root / 'master.m3u8').write_text(master_playlist(tracks))
+        emit('status', phase='video', elapsedSeconds=round(time.monotonic()-video_started, 3),
+             message=f'All requested subtitles are prepared. Video has been preparing for {time.monotonic()-video_started:.1f}s; checking playable segments…')
+    except BaseException:
+        # Stop supervision before deliberate termination, so cleanup cannot
+        # overwrite the original subtitle failure with a video-exit error.
+        done.set()
+        if monitor.ident is not None: monitor.join()
+        # prepare() has not transferred process ownership to run() yet.
+        _stop_group(process)
+        if failures: raise failures[0]
+        raise
+    finally:
+        done.set()
+        if monitor.ident is not None: monitor.join()
+    return process, duration, tracks, source_video_offset
 
 def run(request):
     stopping = threading.Event()
@@ -203,31 +293,43 @@ def run(request):
                 broker = RemoteMediaBroker(request.get('referer', ''))
                 if request.get('source', '').startswith(('http://', 'https://')):
                     request['source'] = broker.map_url(request['source'])
-                request['subtitles'] = [dict(x, url=broker.map_url(x['url'])) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
+                request['subtitles'] = [dict(x, url=broker.map_url(x['url'], role='subtitle')) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
                 request['referer'] = ''
             try:
-                process, duration, tracks = prepare(request, root, stopping, parent)
+                process, duration, tracks, source_video_offset = prepare(request, root, stopping, parent)
             except ValueError:
                 if broker and broker.last_error: raise ValueError(broker.last_error)
                 raise
+            if broker and broker.last_error: raise ValueError(broker.last_error)
+            publisher = HLSPublisher(root, [root / f'sub{i}.vtt' for i in range(len(tracks))],
+                                     timestamp_probe=lambda path: video_presentation_origin(path, stopping, parent) - source_video_offset,
+                                     video_start_offset=source_video_offset / 90000)
             ready = False; started = time.monotonic(); complete = False
             while not stopping.wait(0.5):
                 if os.getppid() != parent: break
+                if broker and broker.last_error: raise ValueError(broker.last_error)
                 size = sum(p.stat().st_size for p in root.iterdir() if p.is_file())
                 if size > MAX_SESSION or shutil.disk_usage(root).free <= EARLY_FLOOR:
                     raise ValueError('Preparation stopped at the storage safety boundary.')
                 code = process.poll()
+                if broker and broker.last_error: raise ValueError(broker.last_error)
                 if code not in (None, 0): raise ValueError('Video preparation failed. The stream may have expired or use an unsupported codec.')
+                publisher.publish()
                 if not ready and (root / 'video.m3u8').exists():
                     host = request.get('address') or lan_address()
                     socket.inet_aton(host)
                     server = MediaServer(root, secrets.token_urlsafe(24), host)
                     threading.Thread(target=server.serve_forever, daemon=True).start()
+                    if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('ready', url=f'http://{host}:{server.server_port}/{server.token}/master.m3u8', duration=duration,
+                         fullyPrepared=code == 0 and publisher.snapshot.complete,
                          subtitles=[dict(label=t['name'], language=t['language']) for t in tracks])
                     ready = True
                 if code == 0 and not complete:
                     if not ready: raise ValueError('No playable media was generated.')
+                    if not publisher.snapshot or not publisher.snapshot.complete:
+                        raise ValueError('Video preparation ended without a complete published playlist.')
+                    if broker and broker.last_error: raise ValueError(broker.last_error)
                     emit('complete', message='Video is fully prepared; seeking is available throughout.')
                     complete = True
                 if not ready and time.monotonic()-started > 120: raise ValueError('No playable segment after two minutes.')

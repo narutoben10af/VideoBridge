@@ -172,6 +172,16 @@ def rewrite_hls(text, base, map_url):
     return '\n'.join(lines) + '\n'
 
 
+def read_remote(response, size, available=False):
+    try:
+        # After response validation, forward available bytes instead of waiting
+        # for a full 128 KiB buffer. Playlist/prefix reads remain complete reads.
+        return response.read1(size) if available else response.read(size)
+    except (OSError, http.client.IncompleteRead):
+        # Upstream failure must not be confused with a cancelled local consumer.
+        raise ValueError('The media download was interrupted. Send the video again.') from None
+
+
 class BrokerHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def do_HEAD(self): self.serve('HEAD')
@@ -183,21 +193,30 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             source = self.server.sources.get(self.path)
             if not source:
                 self.send_error(404); return
-            connection, response, final_url = fetch_public(source, method, self.headers.get('Range'), self.server.referer)
+            try:
+                connection, response, final_url = fetch_public(source, method, self.headers.get('Range'), self.server.referer)
+            except OSError:
+                raise ValueError('The media connection was interrupted. Send the video again.') from None
             if response.status not in (200, 206):
                 self.server.last_error = f'The media server refused this request (HTTP {response.status}). Refresh the video page and send it again.'
                 self.send_error(502, 'Media server did not provide the requested content'); return
             content_type = response.getheader('Content-Type', '').split(';')[0].lower()
             # GET prefix inspection prevents HTML/DASH from being fed to a demuxer.
-            prefix = response.read(4096) if method == 'GET' else b''
+            prefix = read_remote(response, 4096) if method == 'GET' else b''
             stripped = prefix.lstrip(b'\xef\xbb\xbf\r\n\t ')
             hls = stripped.startswith(b'#EXTM3U') or content_type in {'application/vnd.apple.mpegurl', 'application/x-mpegurl', 'audio/mpegurl'}
             if content_type in {'application/dash+xml', 'text/html'} or stripped.startswith((b'<', b'<!')):
-                raise ValueError('This media response is not a supported video stream.')
+                kind = self.server.roles.get(self.path, 'media')
+                raise ValueError(f'The {kind} server returned a web page or unsupported XML instead of playable media. Refresh the video page and send it again.')
+            expected = response.getheader('Content-Length')
+            expected = int(expected) if expected and expected.isdecimal() else None
+            received = len(prefix)
             body = None
             if hls and method == 'GET':
-                body = prefix + response.read(MAX_MANIFEST + 1)
+                body = prefix + read_remote(response, MAX_MANIFEST + 1)
                 if len(body) > MAX_MANIFEST: raise ValueError('HLS playlist is too large.')
+                if expected is not None and len(body) != expected:
+                    raise ValueError('The media playlist download was incomplete. Send the video again.')
                 body = rewrite_hls(body.decode('utf-8-sig'), final_url, self.server.map_url).encode('utf-8')
             self.send_response(response.status)
             self.send_header('Content-Type', 'application/vnd.apple.mpegurl' if hls else content_type or 'application/octet-stream')
@@ -214,9 +233,12 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 else:
                     self.wfile.write(prefix)
                     while not self.server.stopping.is_set():
-                        chunk = response.read(128 * 1024)
+                        chunk = read_remote(response, 128 * 1024, available=True)
                         if not chunk: break
+                        received += len(chunk)
                         self.wfile.write(chunk)
+                    if not self.server.stopping.is_set() and expected is not None and received != expected:
+                        raise ValueError('The media download was incomplete. Send the video again.')
         except (BrokenPipeError, ConnectionResetError): pass
         except Exception as error:
             self.server.last_error = str(error) if isinstance(error, ValueError) else 'The media server connection failed. Refresh the video page and send it again.'
@@ -229,15 +251,17 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
 class RemoteMediaBroker(http.server.ThreadingHTTPServer):
     daemon_threads = True
     def __init__(self, referer=''):
-        self.sources = {}; self.reverse = {}; self.lock = threading.Lock(); self.last_error = None
+        self.sources = {}; self.reverse = {}; self.roles = {}; self.lock = threading.Lock(); self.last_error = None
         self.token = secrets.token_urlsafe(24); self.stopping = threading.Event()
         self.referer = validate_url(referer) if referer else ''
         super().__init__(('127.0.0.1', 0), BrokerHandler)
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
 
-    def map_url(self, url):
+    def map_url(self, url, role='media'):
         url = validate_url(url)
+        if role not in {'media', 'subtitle'}:
+            raise ValueError('Invalid media resource role.')
         with self.lock:
             path = self.reverse.get(url)
             if not path:
@@ -246,8 +270,9 @@ class RemoteMediaBroker(http.server.ThreadingHTTPServer):
                 suffix = suffix if suffix in {'m3u8', 'mp4', 'm4s', 'ts', 'key', 'vtt', 'srt'} else 'ts'
                 path = '/' + self.token + '/' + secrets.token_urlsafe(12) + '.' + suffix
                 self.sources[path] = url; self.reverse[url] = path
+            self.roles[path] = role
         return f'http://127.0.0.1:{self.server_port}{path}'
 
     def close(self):
         self.stopping.set(); self.shutdown(); self.server_close(); self.thread.join(timeout=2)
-        self.sources.clear(); self.reverse.clear()
+        self.sources.clear(); self.reverse.clear(); self.roles.clear()
