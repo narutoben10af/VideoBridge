@@ -1,13 +1,52 @@
 import sys, unittest
-import http.server, io, shutil, subprocess, threading
+import http.client, http.server, io, shutil, socket, subprocess, threading
 from unittest.mock import patch
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'app'))
-from remote_media import validate_url, public_addresses, rewrite_hls, RemoteMediaBroker
+from remote_media import validate_url, public_addresses, rewrite_hls, RemoteMediaBroker, read_remote
 from urllib.request import urlopen
 from urllib.error import HTTPError
 
 class RemoteMediaTests(unittest.TestCase):
+    def test_stream_read_forwards_available_bytes_before_upstream_finishes(self):
+        client, upstream = socket.socketpair()
+        client.settimeout(2)
+        response = http.client.HTTPResponse(client)
+        upstream.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nfirst')
+        response.begin()
+        result = []
+        done = threading.Event()
+        def consume():
+            try: result.append(read_remote(response, 128 * 1024, available=True))
+            finally: done.set()
+        worker = threading.Thread(target=consume, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(done.wait(1), 'Available media waited for the rest of the upstream response')
+            self.assertEqual(result, [b'first'])
+            upstream.sendall(b'rest123')
+            self.assertEqual(read_remote(response, 128 * 1024, available=True), b'rest123')
+            self.assertEqual(read_remote(response, 128 * 1024, available=True), b'')
+        finally:
+            upstream.close(); worker.join(timeout=3); response.close(); client.close()
+
+    def test_subtitle_web_response_has_actionable_private_error(self):
+        class Response(io.BytesIO):
+            status = 200
+            def getheader(self, name, default=None):
+                return 'text/html' if name == 'Content-Type' else default
+        class Connection:
+            def close(self): pass
+        broker = RemoteMediaBroker()
+        try:
+            url = broker.map_url('https://media.example/caption.vtt?secret=private', role='subtitle')
+            with patch('remote_media.fetch_public', return_value=(Connection(), Response(b'<html>Expired</html>'), 'https://media.example/')):
+                with self.assertRaises(HTTPError): urlopen(url)
+            self.assertIn('subtitle server returned a web page', broker.last_error)
+            self.assertNotIn('secret', broker.last_error)
+            self.assertNotIn('media.example', broker.last_error)
+        finally: broker.close()
+
     def test_url_policy(self):
         self.assertEqual(validate_url('https://cdn.example/video?q=a#fragment'), 'https://cdn.example/video?q=a')
         for url in ['file:///etc/passwd','http://cdn.example/a','https://user:pass@cdn.example/a','https://cdn.example:8443/a','https://cdn.example/\r\nCookie:x']:

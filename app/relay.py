@@ -7,7 +7,7 @@ import subprocess, sys, tempfile, threading, time
 from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlsplit
-from process_worker import run_cancellable
+from process_worker import run_cancellable, _stop_group
 from remote_media import RemoteMediaBroker
 from hls_publication import HLSPublisher
 
@@ -152,8 +152,11 @@ def prepare(request, root, stopping, parent_pid):
     if not isinstance(source, str) or len(source) > 16000: raise ValueError('Invalid source.')
     referer = request.get('referer', '')
     ffmpeg = executable('ffmpeg')
+    preparation_started = time.monotonic()
     emit('status', message='Inspecting video and subtitle tracks…')
     info = probe(source, referer, stopping, parent_pid)
+    emit('status', phase='inspection', elapsedSeconds=round(time.monotonic()-preparation_started, 3),
+         message=f'Inspection finished in {time.monotonic()-preparation_started:.1f}s. Validating tracks…')
     streams = info.get('streams', [])
     video = next((x for x in streams if x.get('codec_type') == 'video' and not x.get('disposition', {}).get('attached_pic')), None)
     if video is None: raise ValueError('This source has no video track.')
@@ -203,16 +206,6 @@ def prepare(request, root, stopping, parent_pid):
             emit('warning', message='ASS/SSA subtitles retain text and timing with simplified styling.')
         tracks.append(dict(name=track.get('label', 'Subtitles'), language=track.get('language') or 'und',
                            input=source_args(subsource, referer if subsource.startswith('http') else ''), map='0:s:0'))
-    for i, track in enumerate(tracks):
-        if stopping.is_set(): raise InterruptedError()
-        emit('status', message=f'Preparing selectable subtitles {i+1}/{len(tracks)}…')
-        try:
-            result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', '-xerror', *track['input'], '-map', track['map'],
-                '-c:s', 'webvtt', '-y', str(root / f'sub{i}.vtt')], stopping, parent_pid, timeout=90, capture_output=False)
-        except subprocess.TimeoutExpired:
-            raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
-        if result.returncode: raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
-    (root / 'master.m3u8').write_text(master_playlist(tracks))
     video_args = ['-c:v', 'copy']
     cmd = [ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-copyts', '-start_at_zero', *source_args(source, referer), '-map', f'0:{video["index"]}',
            '-map', '0:a:0?', *video_args, '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-sn',
@@ -221,6 +214,68 @@ def prepare(request, root, stopping, parent_pid):
            '-hls_segment_filename', str(root / 'segment%06d.ts'), str(root / '_video.m3u8')]
     if stopping.is_set() or os.getppid() != parent_pid: raise InterruptedError()
     process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    # Video and subtitles run concurrently, but no public playlist/server is
+    # created until every requested subtitle has completed successfully.
+    video_started = time.monotonic()
+    done = threading.Event(); cancelled = threading.Event(); failures = []
+    def supervise():
+        while not done.is_set():
+            try:
+                if stopping.is_set() or os.getppid() != parent_pid:
+                    cancelled.set(); return
+                if process.poll() not in (None, 0):
+                    raise ValueError('Video preparation failed while preparing subtitles.')
+                size = 0
+                for path in root.iterdir():
+                    try:
+                        if path.is_file(): size += path.stat().st_size
+                    except FileNotFoundError:
+                        pass  # FFmpeg atomically renames its owned temporary outputs.
+                if size > MAX_SESSION or shutil.disk_usage(root).free <= EARLY_FLOOR:
+                    raise ValueError('Preparation stopped at the storage safety boundary.')
+            except Exception as error:
+                failures.append(error); cancelled.set(); return
+            done.wait(0.1)
+    monitor = threading.Thread(target=supervise, daemon=True)
+    try:
+        monitor.start()
+        emit('status', phase='video', elapsedSeconds=round(video_started-preparation_started, 3),
+             message='Preparing video and selectable subtitles…')
+        for i, track in enumerate(tracks):
+            if stopping.is_set() or cancelled.is_set() or os.getppid() != parent_pid:
+                raise InterruptedError()
+            subtitle_started = time.monotonic()
+            emit('status', phase='subtitles', track=i+1, trackCount=len(tracks),
+                 message=f'Preparing selectable subtitles {i+1}/{len(tracks)}; video is preparing in parallel…')
+            try:
+                result = run_cancellable([ffmpeg, '-nostdin', '-v', 'error', '-xerror', *track['input'], '-map', track['map'],
+                    '-c:s', 'webvtt', '-y', str(root / f'sub{i}.vtt')], cancelled, parent_pid, timeout=90, capture_output=False)
+            except subprocess.TimeoutExpired:
+                raise ValueError('Subtitle preparation timed out. No silent fallback to video without subtitles.')
+            if result.returncode:
+                raise ValueError('A subtitle track could not be prepared. No silent fallback to video without subtitles.')
+            emit('status', phase='subtitles', track=i+1, trackCount=len(tracks),
+                 elapsedSeconds=round(time.monotonic()-subtitle_started, 3),
+                 message=f'Subtitle {i+1}/{len(tracks)} prepared in {time.monotonic()-subtitle_started:.1f}s.')
+        done.set(); monitor.join()
+        if failures: raise failures[0]
+        if stopping.is_set() or cancelled.is_set() or os.getppid() != parent_pid: raise InterruptedError()
+        if process.poll() not in (None, 0): raise ValueError('Video preparation failed while preparing subtitles.')
+        (root / 'master.m3u8').write_text(master_playlist(tracks))
+        emit('status', phase='video', elapsedSeconds=round(time.monotonic()-video_started, 3),
+             message=f'All requested subtitles are prepared. Video has been preparing for {time.monotonic()-video_started:.1f}s; checking playable segments…')
+    except BaseException:
+        # Stop supervision before deliberate termination, so cleanup cannot
+        # overwrite the original subtitle failure with a video-exit error.
+        done.set()
+        if monitor.ident is not None: monitor.join()
+        # prepare() has not transferred process ownership to run() yet.
+        _stop_group(process)
+        if failures: raise failures[0]
+        raise
+    finally:
+        done.set()
+        if monitor.ident is not None: monitor.join()
     return process, duration, tracks, source_video_offset
 
 def run(request):
@@ -238,7 +293,7 @@ def run(request):
                 broker = RemoteMediaBroker(request.get('referer', ''))
                 if request.get('source', '').startswith(('http://', 'https://')):
                     request['source'] = broker.map_url(request['source'])
-                request['subtitles'] = [dict(x, url=broker.map_url(x['url'])) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
+                request['subtitles'] = [dict(x, url=broker.map_url(x['url'], role='subtitle')) if x.get('url', '').startswith(('http://', 'https://')) else dict(x) for x in request.get('subtitles', [])]
                 request['referer'] = ''
             try:
                 process, duration, tracks, source_video_offset = prepare(request, root, stopping, parent)

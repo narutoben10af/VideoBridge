@@ -520,7 +520,14 @@ struct RecoveryRetryState {
     }
     private func event(_ event: [String: Any], id: UUID) {
         switch event["event"] as? String {
-        case "status": message = event["message"] as? String ?? "Preparing…"
+        case "status":
+            message = event["message"] as? String ?? "Preparing…"
+            if let phase = event["phase"] as? String,
+               ["inspection", "subtitles", "video"].contains(phase),
+               let elapsed = event["elapsedSeconds"] as? Double,
+               elapsed.isFinite, (0...86400).contains(elapsed) {
+                captureDiagnostic("preparation_\(phase)_\(String(format: "%.3f", elapsed))s")
+            }
         case "warning": warning = event["message"] as? String ?? ""
         case "error":
             completionHandoffPending = false
